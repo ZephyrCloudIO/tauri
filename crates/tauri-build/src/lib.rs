@@ -85,12 +85,18 @@ fn copy_binaries(
 }
 
 /// Copies resources to a path.
-fn copy_resources(resources: ResourcePaths<'_>, path: &Path) -> Result<()> {
+///
+/// When `watch` is `true` (the default, see [`Attributes::watch_resources`]) every
+/// staged resource is also declared as a build script input so that editing it
+/// re-stages it on the next build.
+fn copy_resources(resources: ResourcePaths<'_>, path: &Path, watch: bool) -> Result<()> {
   let path = path.canonicalize()?;
   for resource in resources.iter() {
     let resource = resource?;
 
-    println!("cargo:rerun-if-changed={}", resource.path().display());
+    if watch {
+      println!("cargo:rerun-if-changed={}", resource.path().display());
+    }
 
     // avoid copying the resource if target is the same as source
     let src = resource.path().canonicalize()?;
@@ -373,7 +379,7 @@ impl WindowsAttributes {
 }
 
 /// The attributes used on the build.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Attributes {
   #[allow(dead_code)]
   windows_attributes: WindowsAttributes,
@@ -382,12 +388,52 @@ pub struct Attributes {
   codegen: Option<codegen::context::CodegenContext>,
   inlined_plugins: HashMap<&'static str, InlinedPlugin>,
   app_manifest: AppManifest,
+  watch_resources: bool,
+}
+
+impl Default for Attributes {
+  fn default() -> Self {
+    Self {
+      windows_attributes: Default::default(),
+      capabilities_path_pattern: None,
+      #[cfg(feature = "codegen")]
+      codegen: None,
+      inlined_plugins: Default::default(),
+      app_manifest: Default::default(),
+      watch_resources: true,
+    }
+  }
 }
 
 impl Attributes {
   /// Creates the default attribute set.
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// Sets whether the build script declares every file matched by the
+  /// `bundle > resources` configuration as a build script input, by emitting a
+  /// [rerun-if-changed] instruction for it. Defaults to `true`.
+  ///
+  /// Those instructions exist only to keep the copies this build script stages
+  /// next to the executable — the ones [`resource_dir`] resolves when the app is
+  /// run straight out of the cargo target directory — in sync with their sources.
+  /// The bundler stages its own copies from the source paths at bundle time, so
+  /// **turning this off does not change what a bundled application contains**.
+  ///
+  /// Cargo has no notion of a build script input that may re-run the script
+  /// without invalidating the crate, so a large resource set makes editing any
+  /// one of those files recompile the whole crate. Set this to `false` when the
+  /// resource set is large, non-Rust content (documentation, fixtures, data
+  /// files) and that recompilation costs more than the staged copies going
+  /// stale until the next time the build script runs.
+  ///
+  /// [rerun-if-changed]: https://doc.rust-lang.org/cargo/reference/build-scripts.html#rerun-if-changed
+  /// [`resource_dir`]: https://docs.rs/tauri/latest/tauri/path/struct.PathResolver.html#method.resource_dir
+  #[must_use]
+  pub fn watch_resources(mut self, watch: bool) -> Self {
+    self.watch_resources = watch;
+    self
   }
 
   /// Sets the icon to use on the window. Currently only used on Windows.
@@ -593,10 +639,16 @@ pub fn try_build(attributes: Attributes) -> Result<()> {
     resources.push(fixed_webview2_runtime_path.display().to_string());
   }
   match resources {
-    BundleResources::List(res) => {
-      copy_resources(ResourcePaths::new(res.as_slice(), true), target_dir)?
-    }
-    BundleResources::Map(map) => copy_resources(ResourcePaths::from_map(&map, true), target_dir)?,
+    BundleResources::List(res) => copy_resources(
+      ResourcePaths::new(res.as_slice(), true),
+      target_dir,
+      attributes.watch_resources,
+    )?,
+    BundleResources::Map(map) => copy_resources(
+      ResourcePaths::from_map(&map, true),
+      target_dir,
+      attributes.watch_resources,
+    )?,
   }
 
   if target_triple.contains("darwin") {
@@ -825,32 +877,32 @@ mod tests {
   fn static_vc_runtime_chain() {
     // 1. Nothing is set, should default to true
     let config = tauri_utils::config::Config::default();
-    let attributes = crate::Attributes::new();
+    let attributes = default_attributes();
     assert!(crate::should_static_link_vc_runtime(&config, &attributes));
 
     // 2. Set to anything but "false" in env, should be true
     unsafe { std::env::set_var("STATIC_VCRUNTIME", "qweqe") };
     let config = tauri_utils::config::Config::default();
-    let attributes = crate::Attributes::new();
+    let attributes = default_attributes();
     assert!(crate::should_static_link_vc_runtime(&config, &attributes));
     unsafe { std::env::remove_var("STATIC_VCRUNTIME") };
 
     // 3. Set to "false" in env, should be false
     unsafe { std::env::set_var("STATIC_VCRUNTIME", "false") };
     let config = tauri_utils::config::Config::default();
-    let attributes = crate::Attributes::new();
+    let attributes = default_attributes();
     assert!(!crate::should_static_link_vc_runtime(&config, &attributes));
     unsafe { std::env::remove_var("STATIC_VCRUNTIME") };
 
     // 4. Set to true in attributes, should be true
     let config = tauri_utils::config::Config::default();
-    let attributes = crate::Attributes::new()
+    let attributes = default_attributes()
       .windows_attributes(crate::WindowsAttributes::new().static_vc_runtime(true));
     assert!(crate::should_static_link_vc_runtime(&config, &attributes));
 
     // 5. Set to false in attributes, should be false
     let config = tauri_utils::config::Config::default();
-    let attributes = crate::Attributes::new()
+    let attributes = default_attributes()
       .windows_attributes(crate::WindowsAttributes::new().static_vc_runtime(false));
     assert!(!crate::should_static_link_vc_runtime(&config, &attributes));
 
@@ -864,7 +916,7 @@ mod tests {
       },
       ..Default::default()
     };
-    let attributes = crate::Attributes::new();
+    let attributes = default_attributes();
     assert!(crate::should_static_link_vc_runtime(&config, &attributes));
 
     // 7. Set to false in config, should be false
@@ -877,7 +929,7 @@ mod tests {
       },
       ..Default::default()
     };
-    let attributes = crate::Attributes::new();
+    let attributes = default_attributes();
     assert!(!crate::should_static_link_vc_runtime(&config, &attributes));
 
     // 8. Set to true in config and false in attributes, should be false because attributes takes precedence over config
@@ -890,16 +942,40 @@ mod tests {
       },
       ..Default::default()
     };
-    let attributes = crate::Attributes::new()
+    let attributes = default_attributes()
       .windows_attributes(crate::WindowsAttributes::new().static_vc_runtime(false));
     assert!(!crate::should_static_link_vc_runtime(&config, &attributes));
 
     // 9. Set to false in env and true in attributes, should be false because env takes precedence over attributes
     unsafe { std::env::set_var("STATIC_VCRUNTIME", "false") };
     let config = tauri_utils::config::Config::default();
-    let attributes = crate::Attributes::new()
+    let attributes = default_attributes()
       .windows_attributes(crate::WindowsAttributes::new().static_vc_runtime(true));
     assert!(!crate::should_static_link_vc_runtime(&config, &attributes));
     unsafe { std::env::remove_var("STATIC_VCRUNTIME") };
+  }
+
+  /// `Attributes::default()` builds the default Windows app manifest, which reads
+  /// the `cargo:runtime` instruction the `tauri` crate's build script emits. There
+  /// is no such build script under `cargo test`, so supply the value here.
+  fn default_attributes() -> crate::Attributes {
+    unsafe { std::env::set_var("DEP_TAURI_RUNTIME", "wry") };
+    crate::Attributes::new()
+  }
+
+  #[test]
+  fn resources_are_watched_by_default() {
+    assert!(default_attributes().watch_resources);
+  }
+
+  #[test]
+  fn watch_resources_opt_out() {
+    assert!(!default_attributes().watch_resources(false).watch_resources);
+    assert!(
+      default_attributes()
+        .watch_resources(false)
+        .watch_resources(true)
+        .watch_resources
+    );
   }
 }
