@@ -388,6 +388,7 @@ pub struct Attributes {
   codegen: Option<codegen::context::CodegenContext>,
   inlined_plugins: HashMap<&'static str, InlinedPlugin>,
   app_manifest: AppManifest,
+  build_windows_binary_artifacts: bool,
   watch_resources: bool,
 }
 
@@ -400,6 +401,7 @@ impl Default for Attributes {
       codegen: None,
       inlined_plugins: Default::default(),
       app_manifest: Default::default(),
+      build_windows_binary_artifacts: true,
       watch_resources: true,
     }
   }
@@ -433,6 +435,20 @@ impl Attributes {
   #[must_use]
   pub fn watch_resources(mut self, watch: bool) -> Self {
     self.watch_resources = watch;
+    self
+  }
+
+  /// Sets whether the build script compiles and stages artifacts for the final
+  /// Windows executable. Defaults to `true`.
+  ///
+  /// Setting this to `false` skips Windows resource compilation, GNU
+  /// `WebView2Loader.dll` staging, and MSVC static runtime link configuration.
+  /// Use it only when calling [`try_build`] from a package that generates Tauri
+  /// metadata, such as ACL artifacts, but does not own the application binary.
+  /// The package that builds the executable must keep this enabled.
+  #[must_use]
+  pub fn build_windows_binary_artifacts(mut self, build: bool) -> Self {
+    self.build_windows_binary_artifacts = build;
     self
   }
 
@@ -690,7 +706,7 @@ pub fn try_build(attributes: Attributes) -> Result<()> {
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
   }
 
-  if target_triple.contains("windows") {
+  if target_triple.contains("windows") && attributes.build_windows_binary_artifacts {
     use semver::Version;
     use tauri_winres::{VersionInfo, WindowsResource};
 
@@ -976,6 +992,26 @@ mod tests {
         .watch_resources(false)
         .watch_resources(true)
         .watch_resources
+    );
+  }
+
+  #[test]
+  fn windows_binary_artifacts_are_built_by_default() {
+    assert!(default_attributes().build_windows_binary_artifacts);
+  }
+
+  #[test]
+  fn windows_binary_artifacts_opt_out() {
+    assert!(
+      !default_attributes()
+        .build_windows_binary_artifacts(false)
+        .build_windows_binary_artifacts
+    );
+    assert!(
+      default_attributes()
+        .build_windows_binary_artifacts(false)
+        .build_windows_binary_artifacts(true)
+        .build_windows_binary_artifacts
     );
   }
 }
