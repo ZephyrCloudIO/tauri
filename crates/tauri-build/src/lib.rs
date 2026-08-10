@@ -388,7 +388,7 @@ pub struct Attributes {
   codegen: Option<codegen::context::CodegenContext>,
   inlined_plugins: HashMap<&'static str, InlinedPlugin>,
   app_manifest: AppManifest,
-  build_windows_binary_artifacts: bool,
+  build_application_artifacts: bool,
   watch_resources: bool,
 }
 
@@ -401,7 +401,7 @@ impl Default for Attributes {
       codegen: None,
       inlined_plugins: Default::default(),
       app_manifest: Default::default(),
-      build_windows_binary_artifacts: true,
+      build_application_artifacts: true,
       watch_resources: true,
     }
   }
@@ -439,16 +439,17 @@ impl Attributes {
   }
 
   /// Sets whether the build script compiles and stages artifacts for the final
-  /// Windows executable. Defaults to `true`.
+  /// application executable. Defaults to `true`.
   ///
-  /// Setting this to `false` skips Windows resource compilation, GNU
-  /// `WebView2Loader.dll` staging, and MSVC static runtime link configuration.
-  /// Use it only when calling [`try_build`] from a package that generates Tauri
+  /// Setting this to `false` skips Android project mutation, external binary
+  /// and configured resource staging, macOS framework staging, and
+  /// platform-specific executable link and deployment configuration. Use it
+  /// only when calling [`try_build`] from a package that generates Tauri
   /// metadata, such as ACL artifacts, but does not own the application binary.
   /// The package that builds the executable must keep this enabled.
   #[must_use]
-  pub fn build_windows_binary_artifacts(mut self, build: bool) -> Self {
-    self.build_windows_binary_artifacts = build;
+  pub fn build_application_artifacts(mut self, build: bool) -> Self {
+    self.build_application_artifacts = build;
     self
   }
 
@@ -596,7 +597,9 @@ pub fn try_build(attributes: Attributes) -> Result<()> {
   android_package_prefix.pop();
   println!("cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_PREFIX={android_package_prefix}");
 
-  if let Some(project_dir) = env::var_os("TAURI_ANDROID_PROJECT_PATH").map(PathBuf::from) {
+  if attributes.build_application_artifacts
+    && let Some(project_dir) = env::var_os("TAURI_ANDROID_PROJECT_PATH").map(PathBuf::from)
+  {
     mobile::generate_gradle_files(project_dir)?;
 
     // Update Android manifest with file associations
@@ -622,198 +625,200 @@ pub fn try_build(attributes: Attributes) -> Result<()> {
   // when running codegen in this build script, we need to access the env var directly
   unsafe { env::set_var("TAURI_ENV_TARGET_TRIPLE", &target_triple) };
 
-  // TODO: far from ideal, but there's no other way to get the target dir, see <https://github.com/rust-lang/cargo/issues/5457>
-  let target_dir = out_dir
-    .parent()
-    .unwrap()
-    .parent()
-    .unwrap()
-    .parent()
-    .unwrap();
+  if attributes.build_application_artifacts {
+    // TODO: far from ideal, but there's no other way to get the target dir, see <https://github.com/rust-lang/cargo/issues/5457>
+    let target_dir = out_dir
+      .parent()
+      .unwrap()
+      .parent()
+      .unwrap()
+      .parent()
+      .unwrap();
 
-  if let Some(paths) = &config.bundle.external_bin {
-    copy_binaries(
-      ResourcePaths::new(&external_binaries(paths, &target_triple, &target), true),
-      &target_triple,
-      target_dir,
-      manifest.package.as_ref().map(|p| p.name.as_ref()),
-    )?;
-  }
-
-  #[allow(unused_mut, clippy::redundant_clone)]
-  let mut resources = config
-    .bundle
-    .resources
-    .clone()
-    .unwrap_or_else(|| BundleResources::List(Vec::new()));
-  if target_triple.contains("windows")
-    && let Some(fixed_webview2_runtime_path) = match &config.bundle.windows.webview_install_mode {
-      WebviewInstallMode::FixedRuntime { path } => Some(path),
-      _ => None,
+    if let Some(paths) = &config.bundle.external_bin {
+      copy_binaries(
+        ResourcePaths::new(&external_binaries(paths, &target_triple, &target), true),
+        &target_triple,
+        target_dir,
+        manifest.package.as_ref().map(|p| p.name.as_ref()),
+      )?;
     }
-  {
-    resources.push(fixed_webview2_runtime_path.display().to_string());
-  }
-  match resources {
-    BundleResources::List(res) => copy_resources(
-      ResourcePaths::new(res.as_slice(), true),
-      target_dir,
-      attributes.watch_resources,
-    )?,
-    BundleResources::Map(map) => copy_resources(
-      ResourcePaths::from_map(&map, true),
-      target_dir,
-      attributes.watch_resources,
-    )?,
-  }
 
-  if target_triple.contains("darwin") {
-    if let Some(frameworks) = &config.bundle.macos.frameworks
-      && !frameworks.is_empty()
+    #[allow(unused_mut, clippy::redundant_clone)]
+    let mut resources = config
+      .bundle
+      .resources
+      .clone()
+      .unwrap_or_else(|| BundleResources::List(Vec::new()));
+    if target_triple.contains("windows")
+      && let Some(fixed_webview2_runtime_path) = match &config.bundle.windows.webview_install_mode {
+        WebviewInstallMode::FixedRuntime { path } => Some(path),
+        _ => None,
+      }
     {
-      let frameworks_dir = target_dir.parent().unwrap().join("Frameworks");
-      let _ = fs::remove_dir_all(&frameworks_dir);
-      // copy frameworks to the root `target` folder (instead of `target/debug` for instance)
-      // because the rpath is set to `@executable_path/../Frameworks`.
-      copy_frameworks(&frameworks_dir, frameworks)?;
+      resources.push(fixed_webview2_runtime_path.display().to_string());
+    }
+    match resources {
+      BundleResources::List(res) => copy_resources(
+        ResourcePaths::new(res.as_slice(), true),
+        target_dir,
+        attributes.watch_resources,
+      )?,
+      BundleResources::Map(map) => copy_resources(
+        ResourcePaths::from_map(&map, true),
+        target_dir,
+        attributes.watch_resources,
+      )?,
+    }
+    if target_triple.contains("darwin") {
+      if let Some(frameworks) = &config.bundle.macos.frameworks
+        && !frameworks.is_empty()
+      {
+        let frameworks_dir = target_dir.parent().unwrap().join("Frameworks");
+        let _ = fs::remove_dir_all(&frameworks_dir);
+        // copy frameworks to the root `target` folder (instead of `target/debug` for instance)
+        // because the rpath is set to `@executable_path/../Frameworks`.
+        copy_frameworks(&frameworks_dir, frameworks)?;
 
-      // If we have frameworks, we need to set the @rpath
-      // https://github.com/tauri-apps/tauri/issues/7710
-      println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
+        // If we have frameworks, we need to set the @rpath
+        // https://github.com/tauri-apps/tauri/issues/7710
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
+      }
+
+      if !is_dev()
+        && let Some(version) = &config.bundle.macos.minimum_system_version
+      {
+        println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET={version}");
+      }
     }
 
-    if !is_dev()
-      && let Some(version) = &config.bundle.macos.minimum_system_version
+    if target_triple.contains("ios") {
+      println!(
+        "cargo:rustc-env=IPHONEOS_DEPLOYMENT_TARGET={}",
+        config.bundle.ios.minimum_system_version
+      );
+    }
+
+    if target_triple.contains("unknown-linux-gnu")
+      && env::var("DEP_TAURI_RUNTIME").as_deref() == Ok("cef")
     {
-      println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET={version}");
+      // The executable links against libcef.so, which sits next to it: the
+      // cef-dll-sys build script copies the CEF distribution into the cargo
+      // target directory for dev, and the bundler ships it alongside the binary
+      // in packages. `$ORIGIN` makes the loader look there in both cases.
+      println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     }
-  }
 
-  if target_triple.contains("ios") {
-    println!(
-      "cargo:rustc-env=IPHONEOS_DEPLOYMENT_TARGET={}",
-      config.bundle.ios.minimum_system_version
-    );
-  }
+    if target_triple.contains("windows") {
+      use semver::Version;
+      use tauri_winres::{VersionInfo, WindowsResource};
 
-  if target_triple.contains("unknown-linux-gnu")
-    && env::var("DEP_TAURI_RUNTIME").as_deref() == Ok("cef")
-  {
-    // The executable links against libcef.so, which sits next to it: the
-    // cef-dll-sys build script copies the CEF distribution into the cargo
-    // target directory for dev, and the bundler ships it alongside the binary
-    // in packages. `$ORIGIN` makes the loader look there in both cases.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-  }
+      let window_icon_path = attributes
+        .windows_attributes
+        .window_icon_path
+        .unwrap_or_else(|| {
+          config
+            .bundle
+            .icon
+            .iter()
+            .find(|i| i.ends_with(".ico"))
+            .map(AsRef::as_ref)
+            .unwrap_or("icons/icon.ico")
+            .into()
+        });
 
-  if target_triple.contains("windows") && attributes.build_windows_binary_artifacts {
-    use semver::Version;
-    use tauri_winres::{VersionInfo, WindowsResource};
+      let mut res = WindowsResource::new();
 
-    let window_icon_path = attributes
-      .windows_attributes
-      .window_icon_path
-      .unwrap_or_else(|| {
+      if let Some(manifest) = attributes.windows_attributes.app_manifest {
+        res.set_manifest(&manifest);
+      }
+
+      for content in attributes.windows_attributes.append_rc_content {
+        res.append_rc_content(&content);
+      }
+
+      if let Some(version_str) = &config.version
+        && let Ok(v) = Version::parse(version_str)
+      {
+        let version = to_winres_version(&v);
+        res.set_version_info(VersionInfo::FILEVERSION, version);
+        res.set_version_info(VersionInfo::PRODUCTVERSION, version);
+        res.set("FileVersion", version_str);
+        res.set("ProductVersion", version_str);
+      }
+
+      if let Some(product_name) = &config.product_name {
+        res.set("ProductName", product_name);
+      }
+
+      let company_name = config.bundle.publisher.unwrap_or_else(|| {
         config
-          .bundle
-          .icon
-          .iter()
-          .find(|i| i.ends_with(".ico"))
-          .map(AsRef::as_ref)
-          .unwrap_or("icons/icon.ico")
-          .into()
+          .identifier
+          .split('.')
+          .nth(1)
+          .unwrap_or(&config.identifier)
+          .to_string()
       });
 
-    let mut res = WindowsResource::new();
+      res.set("CompanyName", &company_name);
 
-    if let Some(manifest) = attributes.windows_attributes.app_manifest {
-      res.set_manifest(&manifest);
-    }
+      let file_description = config
+        .product_name
+        .or_else(|| manifest.package.as_ref().map(|p| p.name.clone()))
+        .or_else(|| std::env::var("CARGO_PKG_NAME").ok());
 
-    for content in attributes.windows_attributes.append_rc_content {
-      res.append_rc_content(&content);
-    }
+      res.set("FileDescription", &file_description.unwrap());
 
-    if let Some(version_str) = &config.version
-      && let Ok(v) = Version::parse(version_str)
-    {
-      let version = to_winres_version(&v);
-      res.set_version_info(VersionInfo::FILEVERSION, version);
-      res.set_version_info(VersionInfo::PRODUCTVERSION, version);
-      res.set("FileVersion", version_str);
-      res.set("ProductVersion", version_str);
-    }
+      if let Some(copyright) = &config.bundle.copyright {
+        res.set("LegalCopyright", copyright);
+      }
 
-    if let Some(product_name) = &config.product_name {
-      res.set("ProductName", product_name);
-    }
+      if window_icon_path.exists() {
+        res.set_icon_with_id(&window_icon_path.display().to_string(), "32512");
+      } else {
+        return Err(anyhow!(format!(
+          "`{}` not found; required for generating a Windows Resource file during tauri-build",
+          window_icon_path.display()
+        )));
+      }
 
-    let company_name = config.bundle.publisher.unwrap_or_else(|| {
-      config
-        .identifier
-        .split('.')
-        .nth(1)
-        .unwrap_or(&config.identifier)
-        .to_string()
-    });
+      res.compile().with_context(|| {
+        format!(
+          "failed to compile `{}` into a Windows Resource file during tauri-build",
+          window_icon_path.display()
+        )
+      })?;
 
-    res.set("CompanyName", &company_name);
-
-    let file_description = config
-      .product_name
-      .or_else(|| manifest.package.as_ref().map(|p| p.name.clone()))
-      .or_else(|| std::env::var("CARGO_PKG_NAME").ok());
-
-    res.set("FileDescription", &file_description.unwrap());
-
-    if let Some(copyright) = &config.bundle.copyright {
-      res.set("LegalCopyright", copyright);
-    }
-
-    if window_icon_path.exists() {
-      res.set_icon_with_id(&window_icon_path.display().to_string(), "32512");
-    } else {
-      return Err(anyhow!(format!(
-        "`{}` not found; required for generating a Windows Resource file during tauri-build",
-        window_icon_path.display()
-      )));
-    }
-
-    res.compile().with_context(|| {
-      format!(
-        "failed to compile `{}` into a Windows Resource file during tauri-build",
-        window_icon_path.display()
-      )
-    })?;
-
-    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap();
-    match target_env.as_str() {
-      "gnu" => {
-        let target_arch = match env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
-          "x86_64" => Some("x64"),
-          "x86" => Some("x86"),
-          "aarch64" => Some("arm64"),
-          arch => None,
-        };
-        if let Some(target_arch) = target_arch {
-          for entry in fs::read_dir(target_dir.join("build"))? {
-            let path = entry?.path();
-            let webview2_loader_path = path
-              .join("out")
-              .join(target_arch)
-              .join("WebView2Loader.dll");
-            if path.to_string_lossy().contains("webview2-com-sys") && webview2_loader_path.exists()
-            {
-              fs::copy(webview2_loader_path, target_dir.join("WebView2Loader.dll"))?;
-              break;
+      let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap();
+      match target_env.as_str() {
+        "gnu" => {
+          let target_arch = match env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
+            "x86_64" => Some("x64"),
+            "x86" => Some("x86"),
+            "aarch64" => Some("arm64"),
+            arch => None,
+          };
+          if let Some(target_arch) = target_arch {
+            for entry in fs::read_dir(target_dir.join("build"))? {
+              let path = entry?.path();
+              let webview2_loader_path = path
+                .join("out")
+                .join(target_arch)
+                .join("WebView2Loader.dll");
+              if path.to_string_lossy().contains("webview2-com-sys")
+                && webview2_loader_path.exists()
+              {
+                fs::copy(webview2_loader_path, target_dir.join("WebView2Loader.dll"))?;
+                break;
+              }
             }
           }
         }
+        "msvc" if static_vc_runtime => {
+          static_vcruntime::build();
+        }
+        _ => (),
       }
-      "msvc" if static_vc_runtime => {
-        static_vcruntime::build();
-      }
-      _ => (),
     }
   }
 
@@ -996,22 +1001,22 @@ mod tests {
   }
 
   #[test]
-  fn windows_binary_artifacts_are_built_by_default() {
-    assert!(default_attributes().build_windows_binary_artifacts);
+  fn application_artifacts_are_built_by_default() {
+    assert!(default_attributes().build_application_artifacts);
   }
 
   #[test]
-  fn windows_binary_artifacts_opt_out() {
+  fn application_artifacts_opt_out() {
     assert!(
       !default_attributes()
-        .build_windows_binary_artifacts(false)
-        .build_windows_binary_artifacts
+        .build_application_artifacts(false)
+        .build_application_artifacts
     );
     assert!(
       default_attributes()
-        .build_windows_binary_artifacts(false)
-        .build_windows_binary_artifacts(true)
-        .build_windows_binary_artifacts
+        .build_application_artifacts(false)
+        .build_application_artifacts(true)
+        .build_application_artifacts
     );
   }
 }
