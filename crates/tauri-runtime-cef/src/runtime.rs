@@ -308,6 +308,8 @@ pub(crate) type AfterWindowCreationCallback = Box<dyn for<'a> Fn(RawWindow<'a>) 
 
 pub(crate) enum Message<T: UserEvent> {
   EventLoop(EventLoopMessage),
+  #[cfg(target_os = "macos")]
+  BrowserCloseReady(u32),
   BrowserClosed(WindowId, u32),
   Opened(Vec<url::Url>),
   #[cfg(target_os = "macos")]
@@ -501,6 +503,18 @@ impl<T: UserEvent> WinitCefApp<T> {
   fn handle_message(&mut self, event_loop: &dyn ActiveEventLoop, message: Message<T>) {
     match message {
       Message::EventLoop(message) => self.handle_event_loop_message(event_loop, message),
+      #[cfg(target_os = "macos")]
+      Message::BrowserCloseReady(webview_id) => {
+        if let Some(child) = self
+          .state
+          .windows
+          .values()
+          .flat_map(|appwindow| &appwindow.children)
+          .find(|child| child.webview_id == webview_id)
+        {
+          child.destroy_native_view();
+        }
+      }
       Message::BrowserClosed(_window_id, webview_id) => {
         // Standalone webview.close() keeps the child in state until this
         // callback, so cleanup happens here. Window/app teardown removes child

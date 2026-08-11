@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use std::sync::{Arc, mpsc::Sender};
+use std::sync::{
+  Arc,
+  atomic::{AtomicI32, Ordering},
+  mpsc::Sender,
+};
 
 use cef::*;
 use tauri_runtime::{
@@ -13,6 +17,21 @@ use tauri_runtime::{
 use winit::event_loop::EventLoopProxy as WinitEventLoopProxy;
 
 use crate::runtime::{CefRuntime, Message, NewWindowOpener, RuntimeContext};
+
+const UNREGISTERED_BROWSER_ID: i32 = -1;
+
+fn register_primary_browser(primary_browser_id: &AtomicI32, browser_id: i32) {
+  let _ = primary_browser_id.compare_exchange(
+    UNREGISTERED_BROWSER_ID,
+    browser_id,
+    Ordering::AcqRel,
+    Ordering::Acquire,
+  );
+}
+
+fn should_isolate_browser_close(primary_browser_id: &AtomicI32, browser_id: i32) -> bool {
+  primary_browser_id.load(Ordering::Acquire) == browser_id
+}
 
 // There is some race condition on CEF that causes the app loading to fail
 // when there is a network service crash:
@@ -52,6 +71,7 @@ wrap_life_span_handler! {
     proxy: WinitEventLoopProxy,
     window_id: WindowId,
     webview_id: u32,
+    primary_browser_id: Arc<AtomicI32>,
     context: RuntimeContext<T>,
     new_window_handler: Option<Arc<tauri_runtime::webview::NewWindowHandler<T, CefRuntime<T>>>>,
     initial_url: Option<String>,
@@ -59,11 +79,39 @@ wrap_life_span_handler! {
 
   impl LifeSpanHandler {
     fn on_after_created(&self, browser: Option<&mut Browser>) {
+      if let Some(browser) = browser.as_deref() {
+        register_primary_browser(&self.primary_browser_id, browser.identifier());
+      }
+
       if let Some(browser) = browser
         && let Some(initial_url) = &self.initial_url
       {
         check_and_reload_if_blank(browser.clone(), initial_url.clone());
       }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn do_close(&self, browser: Option<&mut Browser>) -> std::os::raw::c_int {
+      let Some(browser) = browser else {
+        return 0;
+      };
+      if !should_isolate_browser_close(&self.primary_browser_id, browser.identifier()) {
+        return 0;
+      }
+
+      if self
+        .sender
+        .send(Message::BrowserCloseReady(self.webview_id))
+        .is_err()
+      {
+        return 0;
+      }
+      self.proxy.wake_up();
+
+      // CEF's default result sends performClose:/WM_CLOSE/delete_event to the
+      // top-level parent. Tauri owns that window, so the runtime tears down
+      // only this browser's native child view instead.
+      1
     }
 
     fn on_before_popup(
@@ -134,5 +182,33 @@ wrap_life_span_handler! {
         .send(Message::BrowserClosed(self.window_id, self.webview_id));
       self.proxy.wake_up();
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::sync::atomic::AtomicI32;
+
+  use super::{register_primary_browser, should_isolate_browser_close};
+
+  #[test]
+  fn isolates_only_the_runtime_owned_child_browser() {
+    let primary_browser_id = AtomicI32::new(-1);
+
+    register_primary_browser(&primary_browser_id, 41);
+
+    assert!(should_isolate_browser_close(&primary_browser_id, 41));
+    assert!(!should_isolate_browser_close(&primary_browser_id, 42));
+  }
+
+  #[test]
+  fn popup_creation_does_not_replace_the_primary_browser() {
+    let primary_browser_id = AtomicI32::new(-1);
+
+    register_primary_browser(&primary_browser_id, 41);
+    register_primary_browser(&primary_browser_id, 42);
+
+    assert!(should_isolate_browser_close(&primary_browser_id, 41));
+    assert!(!should_isolate_browser_close(&primary_browser_id, 42));
   }
 }

@@ -374,6 +374,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       window_id,
       webview_id,
       pending.label.clone(),
+      Arc::new(AtomicI32::new(-1)),
       Some(pending.url.as_str().to_string()),
       devtools_enabled,
       drag_drop_event_target,
