@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::sync::{Arc, Mutex, atomic::AtomicI32, mpsc::Sender};
 
 use cef::*;
 use tauri_runtime::{UserEvent, window::WindowId};
@@ -71,6 +71,7 @@ wrap_client! {
     pub(crate) window_id: WindowId,
     pub(crate) webview_id: u32,
     pub(crate) label: String,
+    primary_browser_id: Arc<AtomicI32>,
     initial_url: Option<String>,
     devtools_enabled: bool,
     drag_drop_event_target: DragDropEventTarget,
@@ -107,6 +108,7 @@ wrap_client! {
         self.proxy.clone(),
         self.window_id,
         self.webview_id,
+        self.primary_browser_id.clone(),
         self.context.clone(),
         self.handlers.new_window_handler.clone(),
         self.initial_url.clone(),
