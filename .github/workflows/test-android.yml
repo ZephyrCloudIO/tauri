@@ -70,7 +70,8 @@ jobs:
       - name: Restore Android Symlinks
         if: matrix.platform == 'ubuntu-latest' || matrix.platform == 'macos-latest'
         run: |
-          directory="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          host_tag="${{ matrix.platform == 'macos-latest' && 'darwin-x86_64' || 'linux-x86_64' }}"
+          directory="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/$host_tag/bin"
           find "$directory" -type l | while read link; do
               current_target=$(readlink "$link")
               new_target="$directory/$(basename "$current_target")"
@@ -89,7 +90,7 @@ jobs:
 
       - name: move CLI to cargo bin dir
         if: matrix.platform == 'windows-latest'
-        run: mv ./target/debug/cargo-tauri.exe $HOME/.cargo/bin
+        run: mv -Force ./target/debug/cargo-tauri.exe $HOME/.cargo/bin
 
       - run: pnpm i --frozen-lockfile
 
