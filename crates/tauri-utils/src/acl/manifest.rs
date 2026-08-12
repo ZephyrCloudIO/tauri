@@ -128,10 +128,8 @@ impl Manifest {
   pub fn command_permission(&self, identifier: &str, allow_wildcard: bool) -> Option<Permission> {
     let (deny, command_slug) = if let Some(slug) = identifier.strip_prefix("allow-") {
       (false, slug)
-    } else if let Some(slug) = identifier.strip_prefix("deny-") {
-      (true, slug)
     } else {
-      return None;
+      (true, identifier.strip_prefix("deny-")?)
     };
 
     let command = if command_slug == "*" {
