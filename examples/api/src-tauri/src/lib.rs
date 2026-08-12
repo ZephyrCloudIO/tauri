@@ -10,12 +10,12 @@ mod tray;
 
 use serde::Serialize;
 use tauri::{
-  App, Emitter, Listener, Runtime, WebviewUrl,
+  App, Emitter, Listener, WebviewUrl,
   ipc::Channel,
   webview::{PageLoadEvent, WebviewWindowBuilder},
 };
 #[allow(unused)]
-use tauri::{Manager, RunEvent};
+use tauri::{Manager, RunEvent, Runtime};
 use tauri_plugin_sample::{PingRequest, SampleExt};
 
 #[cfg(test)]
@@ -122,7 +122,7 @@ pub fn run_app<F: FnOnce(&App<TauriRuntime>) + Send + 'static>(
       #[cfg(debug_assertions)]
       webview.open_devtools();
 
-      #[cfg(feature = "cef")]
+      #[cfg(all(not(test), feature = "cef"))]
       {
         webview
           .on_dev_tools_protocol(|protocol| match protocol {
