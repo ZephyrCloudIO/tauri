@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cef::*;
 use tauri_runtime::{UserEvent, webview::DetachedWebview};
@@ -235,7 +235,12 @@ wrap_render_process_handler! {
 }
 
 pub(crate) fn render_process_handler() -> RenderProcessHandler {
-  TauriRenderProcessHandler::new(Arc::default())
+  static BROWSER_INITIALIZATION_SCRIPTS: OnceLock<BrowserInitializationScripts> = OnceLock::new();
+  TauriRenderProcessHandler::new(
+    BROWSER_INITIALIZATION_SCRIPTS
+      .get_or_init(Arc::default)
+      .clone(),
+  )
 }
 
 pub(crate) fn on_process_message_received<T: UserEvent>(
