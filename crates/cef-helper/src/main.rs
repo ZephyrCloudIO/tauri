@@ -222,15 +222,22 @@ wrap_render_process_handler! {
         return;
       };
       for script in scripts.iter() {
+        let mut retval = None;
+        let mut exception = None;
         if context.eval(
           Some(&CefString::from(script.as_str())),
           Some(&CefString::from("tauri://initialization-script")),
           0,
-          None,
-          None,
+          Some(&mut retval),
+          Some(&mut exception),
         ) == 0
         {
-          eprintln!("failed to evaluate an all-frame initialization script in a child frame");
+          let message = exception
+            .map(|exception| CefString::from(&exception.message()).to_string())
+            .unwrap_or_else(|| "unknown V8 error".to_string());
+          eprintln!(
+            "failed to evaluate an all-frame initialization script in a child frame: {message}"
+          );
         }
       }
     }
