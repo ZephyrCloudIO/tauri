@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+  collections::HashMap,
+  sync::{Arc, Mutex, OnceLock},
+};
 
 use cef::*;
 use tauri_runtime::{UserEvent, webview::DetachedWebview};
@@ -15,7 +18,7 @@ const IPC_MESSAGE_NAME: &str = "tauri:ipc";
 const IPC_POST_MESSAGE_FUNCTION: &str = "postMessage";
 const ALL_FRAME_INITIALIZATION_SCRIPTS_KEY: &str = "tauri:all-frame-initialization-scripts";
 
-type BrowserInitializationScripts = Arc<Mutex<Vec<(Browser, Arc<[String]>)>>>;
+type BrowserInitializationScripts = Arc<Mutex<HashMap<i32, Arc<[String]>>>>;
 
 pub(crate) type IpcHandler<T> =
   dyn Fn(DetachedWebview<T, CefRuntime<T>>, http::Request<String>) + Send;
@@ -145,11 +148,6 @@ fn initialization_scripts_from_extra_info(
     .into()
 }
 
-fn browser_is_same(stored_browser: &Browser, browser: &Browser) -> bool {
-  let mut browser = browser.clone();
-  stored_browser.is_same(Some(&mut browser)) != 0
-}
-
 fn scripts_for_browser(
   browser_initialization_scripts: &BrowserInitializationScripts,
   browser: &Browser,
@@ -157,10 +155,8 @@ fn scripts_for_browser(
   browser_initialization_scripts
     .lock()
     .unwrap()
-    .iter()
-    .find_map(|(stored_browser, scripts)| {
-      browser_is_same(stored_browser, browser).then(|| scripts.clone())
-    })
+    .get(&browser.identifier())
+    .cloned()
 }
 
 wrap_render_process_handler! {
@@ -178,11 +174,16 @@ wrap_render_process_handler! {
         return;
       };
       let scripts = initialization_scripts_from_extra_info(extra_info);
+      log::debug!(
+        "received {} all-frame initialization scripts for CEF browser {}",
+        scripts.len(),
+        browser.identifier()
+      );
       let mut browser_initialization_scripts = self.browser_initialization_scripts.lock().unwrap();
-      browser_initialization_scripts
-        .retain(|(stored_browser, _)| !browser_is_same(stored_browser, browser));
       if !scripts.is_empty() {
-        browser_initialization_scripts.push((browser.clone(), scripts));
+        browser_initialization_scripts.insert(browser.identifier(), scripts);
+      } else {
+        browser_initialization_scripts.remove(&browser.identifier());
       }
     }
 
@@ -194,7 +195,7 @@ wrap_render_process_handler! {
         .browser_initialization_scripts
         .lock()
         .unwrap()
-        .retain(|(stored_browser, _)| !browser_is_same(stored_browser, browser));
+        .remove(&browser.identifier());
     }
 
     fn on_context_created(
@@ -216,8 +217,19 @@ wrap_render_process_handler! {
       }
 
       let Some(scripts) = scripts_for_browser(&self.browser_initialization_scripts, browser) else {
+        log::debug!(
+          "no all-frame initialization scripts registered for CEF browser {} child frame {}",
+          browser.identifier(),
+          CefString::from(&frame.identifier())
+        );
         return;
       };
+      log::debug!(
+        "evaluating {} all-frame initialization scripts for CEF browser {} child frame {}",
+        scripts.len(),
+        browser.identifier(),
+        CefString::from(&frame.identifier())
+      );
       for script in scripts.iter() {
         if context.eval(
           Some(&CefString::from(script.as_str())),
