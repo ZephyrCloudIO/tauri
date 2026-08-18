@@ -1,7 +1,23 @@
+use std::{
+  collections::HashMap,
+  sync::{Arc, Mutex, OnceLock},
+};
+
 use cef::{args::Args, *};
 
 const IPC_MESSAGE_NAME: &str = "tauri:ipc";
 const IPC_POST_MESSAGE_FUNCTION: &str = "postMessage";
+const ALL_FRAME_INITIALIZATION_SCRIPTS_KEY: &str = "tauri:all-frame-initialization-scripts";
+
+#[derive(Debug)]
+struct BrowserInitializationScriptState {
+  // CEF creates a replacement browser with the same identifier before destroying the old one
+  // during cross-origin navigation, so cleanup must follow browser instances rather than IDs.
+  active_browser_count: usize,
+  scripts: Arc<[String]>,
+}
+
+type BrowserInitializationScripts = Arc<Mutex<HashMap<i32, BrowserInitializationScriptState>>>;
 
 wrap_v8_handler! {
   struct IpcPostMessageV8Handler;
@@ -57,8 +73,8 @@ wrap_v8_handler! {
   }
 }
 
-fn install_ipc_post_message(context: Option<&mut V8Context>) {
-  let Some(window) = context.and_then(|context| context.global()) else {
+fn install_ipc_post_message(context: &mut V8Context) {
+  let Some(window) = context.global() else {
     return;
   };
 
@@ -92,19 +108,142 @@ fn install_ipc_post_message(context: Option<&mut V8Context>) {
   window.set_value_bykey(Some(&CefString::from("ipc")), Some(&mut ipc), attributes);
 }
 
+fn initialization_scripts_from_extra_info(
+  extra_info: Option<&mut DictionaryValue>,
+) -> Arc<[String]> {
+  let Some(script_list) = extra_info.and_then(|extra_info| {
+    extra_info.list(Some(&CefString::from(ALL_FRAME_INITIALIZATION_SCRIPTS_KEY)))
+  }) else {
+    return Arc::default();
+  };
+
+  (0..script_list.size())
+    .map(|index| CefString::from(&script_list.string(index)).to_string())
+    .collect::<Vec<_>>()
+    .into()
+}
+
+fn register_browser_initialization_scripts(
+  browser_initialization_scripts: &mut HashMap<i32, BrowserInitializationScriptState>,
+  browser_identifier: i32,
+  scripts: Arc<[String]>,
+) {
+  if let Some(state) = browser_initialization_scripts.get_mut(&browser_identifier) {
+    state.active_browser_count += 1;
+    if !scripts.is_empty() {
+      state.scripts = scripts;
+    }
+  } else if !scripts.is_empty() {
+    browser_initialization_scripts.insert(
+      browser_identifier,
+      BrowserInitializationScriptState {
+        active_browser_count: 1,
+        scripts,
+      },
+    );
+  }
+}
+
+fn unregister_browser_initialization_scripts(
+  browser_initialization_scripts: &mut HashMap<i32, BrowserInitializationScriptState>,
+  browser_identifier: i32,
+) {
+  let should_remove = browser_initialization_scripts
+    .get_mut(&browser_identifier)
+    .is_some_and(|state| {
+      if state.active_browser_count > 1 {
+        state.active_browser_count -= 1;
+        false
+      } else {
+        true
+      }
+    });
+  if should_remove {
+    browser_initialization_scripts.remove(&browser_identifier);
+  }
+}
+
 wrap_render_process_handler! {
-  struct TauriRenderProcessHandler;
+  struct TauriRenderProcessHandler {
+    browser_initialization_scripts: BrowserInitializationScripts,
+  }
 
   impl RenderProcessHandler {
+    fn on_browser_created(
+      &self,
+      browser: Option<&mut Browser>,
+      extra_info: Option<&mut DictionaryValue>,
+    ) {
+      let Some(browser) = browser else {
+        return;
+      };
+      register_browser_initialization_scripts(
+        &mut self.browser_initialization_scripts.lock().unwrap(),
+        browser.identifier(),
+        initialization_scripts_from_extra_info(extra_info),
+      );
+    }
+
+    fn on_browser_destroyed(&self, browser: Option<&mut Browser>) {
+      let Some(browser) = browser else {
+        return;
+      };
+      unregister_browser_initialization_scripts(
+        &mut self.browser_initialization_scripts.lock().unwrap(),
+        browser.identifier(),
+      );
+    }
+
     fn on_context_created(
       &self,
-      _browser: Option<&mut Browser>,
-      _frame: Option<&mut Frame>,
+      browser: Option<&mut Browser>,
+      frame: Option<&mut Frame>,
       context: Option<&mut V8Context>,
     ) {
+      let Some(context) = context else {
+        return;
+      };
       install_ipc_post_message(context);
+
+      let (Some(browser), Some(frame)) = (browser, frame) else {
+        return;
+      };
+      if frame.is_main() != 0 {
+        return;
+      }
+
+      let scripts = self
+        .browser_initialization_scripts
+        .lock()
+        .unwrap()
+        .get(&browser.identifier())
+        .map(|state| state.scripts.clone());
+      let Some(scripts) = scripts else {
+        return;
+      };
+      for script in scripts.iter() {
+        if context.eval(
+          Some(&CefString::from(script.as_str())),
+          Some(&CefString::from("tauri://initialization-script")),
+          0,
+          None,
+          None,
+        ) == 0
+        {
+          eprintln!("failed to evaluate an all-frame initialization script in a child frame");
+        }
+      }
     }
   }
+}
+
+fn render_process_handler() -> RenderProcessHandler {
+  static BROWSER_INITIALIZATION_SCRIPTS: OnceLock<BrowserInitializationScripts> = OnceLock::new();
+  TauriRenderProcessHandler::new(
+    BROWSER_INITIALIZATION_SCRIPTS
+      .get_or_init(Arc::default)
+      .clone(),
+  )
 }
 
 wrap_app! {
@@ -112,7 +251,7 @@ wrap_app! {
 
   impl App {
     fn render_process_handler(&self) -> Option<RenderProcessHandler> {
-      Some(TauriRenderProcessHandler::new())
+      Some(render_process_handler())
     }
   }
 }
@@ -141,4 +280,48 @@ fn main() {
     Some(&mut app),
     std::ptr::null_mut(),
   );
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn scripts(source: &str) -> Arc<[String]> {
+    vec![source.to_string()].into()
+  }
+
+  #[test]
+  fn cross_origin_browser_replacement_retains_scripts_when_old_browser_is_destroyed() {
+    let mut browser_initialization_scripts = HashMap::new();
+
+    register_browser_initialization_scripts(
+      &mut browser_initialization_scripts,
+      7,
+      scripts("initial"),
+    );
+    register_browser_initialization_scripts(
+      &mut browser_initialization_scripts,
+      7,
+      scripts("replacement"),
+    );
+    unregister_browser_initialization_scripts(&mut browser_initialization_scripts, 7);
+
+    let state = browser_initialization_scripts.get(&7).unwrap();
+    assert_eq!(state.active_browser_count, 1);
+    assert_eq!(&*state.scripts, ["replacement"]);
+  }
+
+  #[test]
+  fn final_browser_destruction_removes_initialization_scripts() {
+    let mut browser_initialization_scripts = HashMap::new();
+
+    register_browser_initialization_scripts(
+      &mut browser_initialization_scripts,
+      7,
+      scripts("initial"),
+    );
+    unregister_browser_initialization_scripts(&mut browser_initialization_scripts, 7);
+
+    assert!(!browser_initialization_scripts.contains_key(&7));
+  }
 }

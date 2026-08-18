@@ -20,6 +20,8 @@ const ALL_FRAME_INITIALIZATION_SCRIPTS_KEY: &str = "tauri:all-frame-initializati
 
 #[derive(Debug)]
 struct BrowserInitializationScriptState {
+  // CEF creates a replacement browser with the same identifier before destroying the old one
+  // during cross-origin navigation, so cleanup must follow browser instances rather than IDs.
   active_browser_count: usize,
   scripts: Arc<[String]>,
 }
