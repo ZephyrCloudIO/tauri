@@ -24,7 +24,7 @@ use tauri_runtime::{
 use tauri_utils::{Theme, config::Color, html::normalize_script_for_csp};
 use url::Url;
 
-use crate::cef_impl::{client as browser_client, cookie, request_context, request_handler};
+use crate::cef_impl::{client as browser_client, cookie, ipc, request_context, request_handler};
 use crate::runtime::{CefRuntime, Message, RuntimeContext, WinitCefApp};
 use crate::window::AppWindow;
 
@@ -443,12 +443,15 @@ impl<T: UserEvent> WinitCefApp<T> {
         // Create with an inert document so the BrowserHost exists before the real
         // navigation; the real URL is loaded once the document-start script is set.
         let initial_url = CefString::from(INITIAL_LOAD_URL);
+        let mut extra_info = ipc::initialization_scripts_extra_info(
+          all_frame_initialization_script_sources(&initialization_scripts),
+        );
         let Some(browser) = cef::browser_host_create_browser_sync(
           Some(&window_info),
           Some(&mut client),
           Some(&initial_url),
           Some(&settings),
-          None,
+          extra_info.as_mut(),
           request_context.as_mut(),
         ) else {
           log::error!("failed to create CEF browser for webview {label:?}");
@@ -827,7 +830,7 @@ unsafe impl Sync for WebviewAtribute {}
 pub struct CefInitScript {
   pub(crate) script: String,
   pub(crate) hash: String,
-  for_main_frame_only: bool,
+  pub(crate) for_main_frame_only: bool,
 }
 
 impl CefInitScript {
@@ -864,6 +867,15 @@ pub(crate) fn initialization_scripts(attrs: &mut WebviewAttributes) -> Arc<Vec<C
   );
 
   Arc::new(initialization_scripts)
+}
+
+fn all_frame_initialization_script_sources(
+  initialization_scripts: &[CefInitScript],
+) -> impl Iterator<Item = &str> {
+  initialization_scripts
+    .iter()
+    .filter(|script| !script.for_main_frame_only)
+    .map(|script| script.script.as_str())
 }
 
 #[derive(Debug, Clone)]
@@ -1475,20 +1487,17 @@ fn devtools_initialization_script_source(
       return false;
     }}
   }})();
+  if (__TAURI_CEF_INIT_IS_MAIN_FRAME__ && !__TAURI_CEF_INIT_IS_CUSTOM_PROTOCOL__) {{
 "#
   );
 
   for init_script in initialization_scripts {
-    source.push_str("  if (!__TAURI_CEF_INIT_IS_CUSTOM_PROTOCOL__");
-    if init_script.for_main_frame_only {
-      source.push_str(" && __TAURI_CEF_INIT_IS_MAIN_FRAME__");
-    }
-    source.push_str(") {\n");
+    source.push_str("    {\n");
     source.push_str(init_script.script.as_str());
-    source.push_str("\n  }\n");
+    source.push_str("\n    }\n");
   }
 
-  source.push_str("}\n");
+  source.push_str("  }\n}\n");
   Some(source)
 }
 
@@ -1595,5 +1604,53 @@ pub(crate) fn load_initial_url_after_registering_initialization_scripts(
 fn load_initial_url(browser: &Browser, initial_url: &str) {
   if let Some(frame) = browser.main_frame() {
     frame.load_url(Some(&CefString::from(initial_url)));
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn init_script(script: &str, for_main_frame_only: bool) -> CefInitScript {
+    CefInitScript {
+      script: script.to_string(),
+      hash: format!("hash-{script}"),
+      for_main_frame_only,
+    }
+  }
+
+  #[test]
+  fn extra_info_sources_only_include_all_frame_scripts_in_order() {
+    let scripts = [
+      init_script("main-one", true),
+      init_script("all-one", false),
+      init_script("main-two", true),
+      init_script("all-two", false),
+    ];
+
+    assert_eq!(
+      all_frame_initialization_script_sources(&scripts).collect::<Vec<_>>(),
+      ["all-one", "all-two"]
+    );
+  }
+
+  #[test]
+  fn devtools_source_runs_every_script_in_order_only_in_the_main_frame() {
+    let scripts = [
+      init_script("globalThis.mainOnly = true;", true),
+      init_script("globalThis.allFrames = true;", false),
+    ];
+
+    let source =
+      devtools_initialization_script_source(&scripts, "https", &["app.localhost".to_string()])
+        .unwrap();
+
+    let main_frame_guard = source
+      .find("if (__TAURI_CEF_INIT_IS_MAIN_FRAME__ && !__TAURI_CEF_INIT_IS_CUSTOM_PROTOCOL__)")
+      .unwrap();
+    let main_only = source.find("globalThis.mainOnly = true;").unwrap();
+    let all_frames = source.find("globalThis.allFrames = true;").unwrap();
+    assert!(main_frame_guard < main_only);
+    assert!(main_only < all_frames);
   }
 }

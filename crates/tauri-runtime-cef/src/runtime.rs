@@ -1037,7 +1037,7 @@ wrap_app! {
 
   impl App {
     fn render_process_handler(&self) -> Option<RenderProcessHandler> {
-      Some(ipc::TauriRenderProcessHandler::new())
+      Some(ipc::render_process_handler())
     }
 
     fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -1102,7 +1102,7 @@ wrap_app! {
 
   impl App {
     fn render_process_handler(&self) -> Option<RenderProcessHandler> {
-      Some(ipc::TauriRenderProcessHandler::new())
+      Some(ipc::render_process_handler())
     }
   }
 }

@@ -106,6 +106,29 @@ fn inject_scripts_into_html_body(
   Some(serialize_node(&document))
 }
 
+fn response_body_with_initialization_scripts(
+  body: Vec<u8>,
+  is_html: bool,
+  initialization_scripts: &[CefInitScript],
+) -> Vec<u8> {
+  if is_html && !initialization_scripts.is_empty() {
+    inject_scripts_into_html_body(&body, initialization_scripts).unwrap_or(body)
+  } else {
+    body
+  }
+}
+
+fn initialization_scripts_for_frame(
+  initialization_scripts: Arc<Vec<CefInitScript>>,
+  is_main_frame: bool,
+) -> Arc<Vec<CefInitScript>> {
+  if is_main_frame {
+    initialization_scripts
+  } else {
+    Arc::default()
+  }
+}
+
 wrap_request_handler! {
   pub struct WebRequestHandler<T: UserEvent> {
     navigation_handler: Option<Arc<NavigationHandler>>,
@@ -242,13 +265,11 @@ wrap_resource_handler! {
             .unwrap_or(false);
 
           let (parts, body) = response.into_parts();
-          let body_bytes = body.into_owned();
-          let body_bytes = if is_html {
-            inject_scripts_into_html_body(&body_bytes, &initialization_scripts)
-              .unwrap_or(body_bytes)
-          } else {
-            body_bytes
-          };
+          let body_bytes = response_body_with_initialization_scripts(
+            body.into_owned(),
+            is_html,
+            &initialization_scripts,
+          );
 
           let mut response = http::Response::from_parts(parts, Cursor::new(body_bytes));
 
@@ -398,6 +419,9 @@ wrap_scheme_handler_factory! {
       _scheme_name: Option<&CefString>,
       _request: Option<&mut Request>,
     ) -> Option<ResourceHandler> {
+      let is_main_frame = frame
+        .as_ref()
+        .is_some_and(|frame| frame.is_main() == 1);
       let (webview_label, handler, initialization_scripts) = match browser {
         Some(browser) => {
           let id = browser.identifier();
@@ -434,17 +458,22 @@ wrap_scheme_handler_factory! {
           (webview_label, handler, Arc::new(Vec::new()))
         }
       };
+      let initialization_scripts =
+        initialization_scripts_for_frame(initialization_scripts, is_main_frame);
 
       // Capture the initiating main frame's origin so `process_request` can
       // repair a racy `Origin: null` header. Restricted to the main frame: it
       // is never an opaque-origin (sandboxed) document in a Tauri webview, so
       // upgrading its origin is safe; subframes are intentionally left alone.
-      let initiator_origin = frame
-        .filter(|frame| frame.is_main() == 1)
-        .map(|frame| CefString::from(&frame.url()).to_string())
-        .and_then(|url| Url::parse(&url).ok())
-        .map(|url| url.origin().ascii_serialization())
-        .filter(|origin| origin != "null");
+      let initiator_origin = if is_main_frame {
+        frame
+          .map(|frame| CefString::from(&frame.url()).to_string())
+          .and_then(|url| Url::parse(&url).ok())
+          .map(|url| url.origin().ascii_serialization())
+          .filter(|origin| origin != "null")
+      } else {
+        None
+      };
 
       Some(WebResourceHandler::new(
         webview_label,
@@ -526,4 +555,51 @@ fn get_request_headers(request: &mut Request) -> HeaderMap {
   }
 
   headers
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn init_script(script: &str, hash: &str, for_main_frame_only: bool) -> CefInitScript {
+    CefInitScript {
+      script: script.to_string(),
+      hash: hash.to_string(),
+      for_main_frame_only,
+    }
+  }
+
+  #[test]
+  fn child_custom_protocol_response_does_not_receive_scripts_or_csp_hashes() {
+    let scripts = Arc::new(vec![
+      init_script("globalThis.mainOnly = true;", "'sha256-main'", true),
+      init_script("globalThis.allFrames = true;", "'sha256-all'", false),
+    ]);
+    let child_scripts = initialization_scripts_for_frame(scripts, false);
+    let body = b"<html><head></head><body>child</body></html>".to_vec();
+    let csp = "default-src 'self'; script-src 'self'".to_string();
+
+    assert!(child_scripts.is_empty());
+    assert_eq!(
+      response_body_with_initialization_scripts(body.clone(), true, &child_scripts),
+      body
+    );
+    assert_eq!(
+      csp_inject_initialization_scripts_hashes(csp.clone(), &child_scripts),
+      csp
+    );
+  }
+
+  #[test]
+  fn main_custom_protocol_response_keeps_all_scripts_in_order() {
+    let scripts = Arc::new(vec![
+      init_script("globalThis.first = true;", "'sha256-first'", true),
+      init_script("globalThis.second = true;", "'sha256-second'", false),
+    ]);
+    let main_scripts = initialization_scripts_for_frame(scripts.clone(), true);
+
+    assert!(Arc::ptr_eq(&scripts, &main_scripts));
+    assert_eq!(main_scripts[0].script, "globalThis.first = true;");
+    assert_eq!(main_scripts[1].script, "globalThis.second = true;");
+  }
 }

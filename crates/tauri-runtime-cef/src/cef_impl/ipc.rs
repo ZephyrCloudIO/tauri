@@ -13,6 +13,9 @@ use crate::{
 
 const IPC_MESSAGE_NAME: &str = "tauri:ipc";
 const IPC_POST_MESSAGE_FUNCTION: &str = "postMessage";
+const ALL_FRAME_INITIALIZATION_SCRIPTS_KEY: &str = "tauri:all-frame-initialization-scripts";
+
+type BrowserInitializationScripts = Arc<Mutex<Vec<(Browser, Arc<[String]>)>>>;
 
 pub(crate) type IpcHandler<T> =
   dyn Fn(DetachedWebview<T, CefRuntime<T>>, http::Request<String>) + Send;
@@ -74,8 +77,8 @@ wrap_v8_handler! {
   }
 }
 
-fn install_ipc_post_message(context: Option<&mut V8Context>) {
-  let Some(window) = context.and_then(|context| context.global()) else {
+fn install_ipc_post_message(context: &mut V8Context) {
+  let Some(window) = context.global() else {
     return;
   };
   let attributes = sys::cef_v8_propertyattribute_t(
@@ -106,19 +109,133 @@ fn install_ipc_post_message(context: Option<&mut V8Context>) {
   window.set_value_bykey(Some(&CefString::from("ipc")), Some(&mut ipc), attributes);
 }
 
+pub(crate) fn initialization_scripts_extra_info<'a>(
+  scripts: impl IntoIterator<Item = &'a str>,
+) -> Option<DictionaryValue> {
+  let scripts: Vec<_> = scripts.into_iter().collect();
+  if scripts.is_empty() {
+    return None;
+  }
+
+  let extra_info = dictionary_value_create()?;
+  let mut script_list = list_value_create()?;
+  script_list.set_size(scripts.len());
+  for (index, script) in scripts.into_iter().enumerate() {
+    script_list.set_string(index, Some(&CefString::from(script)));
+  }
+  extra_info.set_list(
+    Some(&CefString::from(ALL_FRAME_INITIALIZATION_SCRIPTS_KEY)),
+    Some(&mut script_list),
+  );
+  Some(extra_info)
+}
+
+fn initialization_scripts_from_extra_info(
+  extra_info: Option<&mut DictionaryValue>,
+) -> Arc<[String]> {
+  let Some(script_list) = extra_info.and_then(|extra_info| {
+    extra_info.list(Some(&CefString::from(ALL_FRAME_INITIALIZATION_SCRIPTS_KEY)))
+  }) else {
+    return Arc::default();
+  };
+
+  (0..script_list.size())
+    .map(|index| CefString::from(&script_list.string(index)).to_string())
+    .collect::<Vec<_>>()
+    .into()
+}
+
+fn browser_is_same(stored_browser: &Browser, browser: &Browser) -> bool {
+  let mut browser = browser.clone();
+  stored_browser.is_same(Some(&mut browser)) != 0
+}
+
+fn scripts_for_browser(
+  browser_initialization_scripts: &BrowserInitializationScripts,
+  browser: &Browser,
+) -> Option<Arc<[String]>> {
+  browser_initialization_scripts
+    .lock()
+    .unwrap()
+    .iter()
+    .find_map(|(stored_browser, scripts)| {
+      browser_is_same(stored_browser, browser).then(|| scripts.clone())
+    })
+}
+
 wrap_render_process_handler! {
-  pub struct TauriRenderProcessHandler;
+  struct TauriRenderProcessHandler {
+    browser_initialization_scripts: BrowserInitializationScripts,
+  }
 
   impl RenderProcessHandler {
+    fn on_browser_created(
+      &self,
+      browser: Option<&mut Browser>,
+      extra_info: Option<&mut DictionaryValue>,
+    ) {
+      let Some(browser) = browser else {
+        return;
+      };
+      let scripts = initialization_scripts_from_extra_info(extra_info);
+      let mut browser_initialization_scripts = self.browser_initialization_scripts.lock().unwrap();
+      browser_initialization_scripts
+        .retain(|(stored_browser, _)| !browser_is_same(stored_browser, browser));
+      if !scripts.is_empty() {
+        browser_initialization_scripts.push((browser.clone(), scripts));
+      }
+    }
+
+    fn on_browser_destroyed(&self, browser: Option<&mut Browser>) {
+      let Some(browser) = browser else {
+        return;
+      };
+      self
+        .browser_initialization_scripts
+        .lock()
+        .unwrap()
+        .retain(|(stored_browser, _)| !browser_is_same(stored_browser, browser));
+    }
+
     fn on_context_created(
       &self,
-      _browser: Option<&mut Browser>,
-      _frame: Option<&mut Frame>,
+      browser: Option<&mut Browser>,
+      frame: Option<&mut Frame>,
       context: Option<&mut V8Context>,
     ) {
+      let Some(context) = context else {
+        return;
+      };
       install_ipc_post_message(context);
+
+      let (Some(browser), Some(frame)) = (browser, frame) else {
+        return;
+      };
+      if frame.is_main() != 0 {
+        return;
+      }
+
+      let Some(scripts) = scripts_for_browser(&self.browser_initialization_scripts, browser) else {
+        return;
+      };
+      for script in scripts.iter() {
+        if context.eval(
+          Some(&CefString::from(script.as_str())),
+          Some(&CefString::from("tauri://initialization-script")),
+          0,
+          None,
+          None,
+        ) == 0
+        {
+          log::error!("failed to evaluate an all-frame initialization script in a child frame");
+        }
+      }
     }
   }
+}
+
+pub(crate) fn render_process_handler() -> RenderProcessHandler {
+  TauriRenderProcessHandler::new(Arc::default())
 }
 
 pub(crate) fn on_process_message_received<T: UserEvent>(
