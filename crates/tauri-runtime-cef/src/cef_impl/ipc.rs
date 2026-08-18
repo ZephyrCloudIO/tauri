@@ -18,7 +18,13 @@ const IPC_MESSAGE_NAME: &str = "tauri:ipc";
 const IPC_POST_MESSAGE_FUNCTION: &str = "postMessage";
 const ALL_FRAME_INITIALIZATION_SCRIPTS_KEY: &str = "tauri:all-frame-initialization-scripts";
 
-type BrowserInitializationScripts = Arc<Mutex<HashMap<i32, Arc<[String]>>>>;
+#[derive(Debug)]
+struct BrowserInitializationScriptState {
+  active_browser_count: usize,
+  scripts: Arc<[String]>,
+}
+
+type BrowserInitializationScripts = Arc<Mutex<HashMap<i32, BrowserInitializationScriptState>>>;
 
 pub(crate) type IpcHandler<T> =
   dyn Fn(DetachedWebview<T, CefRuntime<T>>, http::Request<String>) + Send;
@@ -156,7 +162,47 @@ fn scripts_for_browser(
     .lock()
     .unwrap()
     .get(&browser.identifier())
-    .cloned()
+    .map(|state| state.scripts.clone())
+}
+
+fn register_browser_initialization_scripts(
+  browser_initialization_scripts: &mut HashMap<i32, BrowserInitializationScriptState>,
+  browser_identifier: i32,
+  scripts: Arc<[String]>,
+) {
+  if let Some(state) = browser_initialization_scripts.get_mut(&browser_identifier) {
+    state.active_browser_count += 1;
+    if !scripts.is_empty() {
+      state.scripts = scripts;
+    }
+  } else if !scripts.is_empty() {
+    browser_initialization_scripts.insert(
+      browser_identifier,
+      BrowserInitializationScriptState {
+        active_browser_count: 1,
+        scripts,
+      },
+    );
+  }
+}
+
+fn unregister_browser_initialization_scripts(
+  browser_initialization_scripts: &mut HashMap<i32, BrowserInitializationScriptState>,
+  browser_identifier: i32,
+) {
+  let should_remove = browser_initialization_scripts
+    .get_mut(&browser_identifier)
+    .is_some_and(|state| {
+      if state.active_browser_count > 1 {
+        state.active_browser_count -= 1;
+        false
+      } else {
+        true
+      }
+    });
+  if should_remove {
+    browser_initialization_scripts.remove(&browser_identifier);
+  }
 }
 
 wrap_render_process_handler! {
@@ -180,22 +226,21 @@ wrap_render_process_handler! {
         browser.identifier()
       );
       let mut browser_initialization_scripts = self.browser_initialization_scripts.lock().unwrap();
-      if !scripts.is_empty() {
-        browser_initialization_scripts.insert(browser.identifier(), scripts);
-      } else {
-        browser_initialization_scripts.remove(&browser.identifier());
-      }
+      register_browser_initialization_scripts(
+        &mut browser_initialization_scripts,
+        browser.identifier(),
+        scripts,
+      );
     }
 
     fn on_browser_destroyed(&self, browser: Option<&mut Browser>) {
       let Some(browser) = browser else {
         return;
       };
-      self
-        .browser_initialization_scripts
-        .lock()
-        .unwrap()
-        .remove(&browser.identifier());
+      unregister_browser_initialization_scripts(
+        &mut self.browser_initialization_scripts.lock().unwrap(),
+        browser.identifier(),
+      );
     }
 
     fn on_context_created(
@@ -299,4 +344,48 @@ pub(crate) fn on_process_message_received<T: UserEvent>(
     );
   }
   1
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn scripts(source: &str) -> Arc<[String]> {
+    vec![source.to_string()].into()
+  }
+
+  #[test]
+  fn cross_origin_browser_replacement_retains_scripts_when_old_browser_is_destroyed() {
+    let mut browser_initialization_scripts = HashMap::new();
+
+    register_browser_initialization_scripts(
+      &mut browser_initialization_scripts,
+      7,
+      scripts("initial"),
+    );
+    register_browser_initialization_scripts(
+      &mut browser_initialization_scripts,
+      7,
+      scripts("replacement"),
+    );
+    unregister_browser_initialization_scripts(&mut browser_initialization_scripts, 7);
+
+    let state = browser_initialization_scripts.get(&7).unwrap();
+    assert_eq!(state.active_browser_count, 1);
+    assert_eq!(&*state.scripts, ["replacement"]);
+  }
+
+  #[test]
+  fn final_browser_destruction_removes_initialization_scripts() {
+    let mut browser_initialization_scripts = HashMap::new();
+
+    register_browser_initialization_scripts(
+      &mut browser_initialization_scripts,
+      7,
+      scripts("initial"),
+    );
+    unregister_browser_initialization_scripts(&mut browser_initialization_scripts, 7);
+
+    assert!(!browser_initialization_scripts.contains_key(&7));
+  }
 }
