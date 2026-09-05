@@ -81,7 +81,7 @@ wrap_client! {
     drag_drop_state: Arc<Mutex<DragDropState>>,
     frame_navigation_state: crate::FrameNavigationState,
     popup_family: Weak<crate::popup::PopupFamily>,
-    opener: Option<crate::FrameNavigationState>,
+    opener: Option<crate::popup::PopupRequest>,
     pub(crate) handlers: TauriCefBrowserClientHandlers<T>,
     proxy: WinitEventLoopProxy,
     sender: Sender<Message<T>>,

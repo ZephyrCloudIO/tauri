@@ -15,7 +15,7 @@ use winit::event_loop::EventLoopProxy as WinitEventLoopProxy;
 use crate::runtime::{CefRuntime, Message, NewWindowOpener, RuntimeContext};
 
 pub(super) type PopupClientFactory =
-  dyn Fn(crate::FrameNavigationState, crate::FrameNavigationState) -> Client;
+  dyn Fn(crate::popup::PopupRequest, crate::FrameNavigationState) -> Client;
 
 // There is some race condition on CEF that causes the app loading to fail
 // when there is a network service crash:
@@ -60,7 +60,7 @@ wrap_life_span_handler! {
     initial_url: Option<String>,
     frame_navigation_state: crate::FrameNavigationState,
     popup_family: Weak<crate::popup::PopupFamily>,
-    opener: Option<crate::FrameNavigationState>,
+    opener: Option<crate::popup::PopupRequest>,
     create_popup: Arc<PopupClientFactory>,
   }
 
@@ -68,7 +68,7 @@ wrap_life_span_handler! {
     fn on_after_created(&self, browser: Option<&mut Browser>) {
       if let (Some(browser), Some(opener)) = (browser.as_deref(), self.opener.as_ref()) {
         if let Some(family) = self.popup_family.upgrade() {
-          let _ = self.sender.send(Message::PopupCreated(browser.identifier(), family.clone()));
+          let _ = self.sender.send(Message::PopupCreated(opener.clone(), browser.identifier(), family.clone()));
           self.proxy.wake_up();
           family.created(browser, opener, &self.frame_navigation_state);
         } else if let Some(host) = browser.host() {
@@ -88,7 +88,7 @@ wrap_life_span_handler! {
       &self,
       browser: Option<&mut Browser>,
       _frame: Option<&mut Frame>,
-      _popup_id: std::os::raw::c_int,
+      popup_id: std::os::raw::c_int,
       target_url: Option<&CefString>,
       _target_frame_name: Option<&CefString>,
       _target_disposition: WindowOpenDisposition,
@@ -118,11 +118,16 @@ wrap_life_span_handler! {
         tauri_runtime::webview::NewWindowResponse::Allow => {
           let (Some(browser), Some(client), Some(family)) =
             (browser, client, self.popup_family.upgrade()) else { return 1; };
-          if !family.admits(&self.frame_navigation_state, browser.identifier()) { return 1; }
+          let Some(request) = family.reserve(&self.frame_navigation_state, browser.identifier(), popup_id) else { return 1; };
+          if self.sender.send(Message::PopupPending(request.clone(), family.clone())).is_err() {
+            family.abort(&self.frame_navigation_state, popup_id);
+            return 1;
+          }
+          self.proxy.wake_up();
           // Keep CEF's popup creation and JavaScript opener relationship. Only
           // its client changes: root IPC, load/title callbacks and close handling
           // cannot be inherited by a different native browser lifetime.
-          *client = Some((self.create_popup)(self.frame_navigation_state.clone(), crate::FrameNavigationState::new()));
+          *client = Some((self.create_popup)(request, crate::FrameNavigationState::new()));
           0
         },
         tauri_runtime::webview::NewWindowResponse::Create { window_id } => {
@@ -138,6 +143,16 @@ wrap_life_span_handler! {
           1
         }
         tauri_runtime::webview::NewWindowResponse::Deny => 1,
+      }
+    }
+
+    fn on_before_popup_aborted(&self, browser: Option<&mut Browser>, popup_id: std::os::raw::c_int) {
+      let Some(browser) = browser else { return; };
+      if !self.frame_navigation_state.has_browser_id(browser.identifier()) { return; }
+      if let Some(family) = self.popup_family.upgrade()
+        && let Some(request) = family.abort(&self.frame_navigation_state, popup_id) {
+        let _ = self.sender.send(Message::PopupAborted(request));
+        self.proxy.wake_up();
       }
     }
 

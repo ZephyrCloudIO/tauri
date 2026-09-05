@@ -309,7 +309,13 @@ pub(crate) type AfterWindowCreationCallback = Box<dyn for<'a> Fn(RawWindow<'a>) 
 pub(crate) enum Message<T: UserEvent> {
   EventLoop(EventLoopMessage),
   BrowserClosed(WindowId, u32),
-  PopupCreated(i32, Arc<crate::popup::PopupFamily>),
+  PopupPending(crate::popup::PopupRequest, Arc<crate::popup::PopupFamily>),
+  PopupCreated(
+    crate::popup::PopupRequest,
+    i32,
+    Arc<crate::popup::PopupFamily>,
+  ),
+  PopupAborted(crate::popup::PopupRequest),
   PopupClosed(i32),
   /// CEF handed us the teardown of a webview's browser, keyed by the webview's
   /// process-unique id. See `TauriCefChildLifeSpanHandler::do_close`.
@@ -446,6 +452,7 @@ pub(crate) struct AppState<T: UserEvent> {
   pub(crate) callback: Box<dyn FnMut(RunEvent<T>)>,
   pub(crate) live_browsers: usize,
   live_popups: HashMap<i32, Arc<crate::popup::PopupFamily>>,
+  pending_popups: Vec<(crate::popup::PopupRequest, Arc<crate::popup::PopupFamily>)>,
   pub(crate) exiting: bool,
 }
 
@@ -472,6 +479,7 @@ impl<T: UserEvent> WinitCefApp<T> {
         callback,
         live_browsers: 0,
         live_popups: HashMap::new(),
+        pending_popups: Vec::new(),
         exiting: false,
       },
       scheme_registry,
@@ -509,8 +517,22 @@ impl<T: UserEvent> WinitCefApp<T> {
   fn handle_message(&mut self, event_loop: &dyn ActiveEventLoop, message: Message<T>) {
     match message {
       Message::EventLoop(message) => self.handle_event_loop_message(event_loop, message),
-      Message::PopupCreated(id, family) => {
+      Message::PopupPending(request, family) => {
+        self.state.pending_popups.push((request, family));
+      }
+      Message::PopupCreated(request, id, family) => {
+        self
+          .state
+          .pending_popups
+          .retain(|(pending, _)| !pending.is_same(&request));
         self.state.live_popups.insert(id, family);
+      }
+      Message::PopupAborted(request) => {
+        self
+          .state
+          .pending_popups
+          .retain(|(pending, _)| !pending.is_same(&request));
+        self.exit_if_done(event_loop);
       }
       Message::PopupClosed(id) => {
         self.state.live_popups.remove(&id);
@@ -891,7 +913,10 @@ impl<T: UserEvent> WinitCefApp<T> {
   }
 
   fn exit_if_done(&mut self, event_loop: &dyn ActiveEventLoop) {
-    if self.state.live_browsers != 0 || !self.state.live_popups.is_empty() {
+    if self.state.live_browsers != 0
+      || !self.state.live_popups.is_empty()
+      || !self.state.pending_popups.is_empty()
+    {
       return;
     }
 

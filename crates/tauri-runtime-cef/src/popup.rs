@@ -18,12 +18,23 @@ use tauri_runtime::dpi::{LogicalPosition, LogicalSize, Rect};
 
 const MAX_POPUPS: usize = 128;
 
+#[derive(Clone)]
+pub(crate) struct PopupRequest {
+  pub(crate) opener: FrameNavigationState,
+  popup_id: i32,
+  identity: Arc<()>,
+}
+impl PopupRequest {
+  pub(crate) fn is_same(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.identity, &other.identity)
+  }
+}
+
 struct Popup {
   browser: Browser,
   state: FrameNavigationState,
   opener: FrameNavigationState,
   closing: AtomicBool,
-  window: Mutex<Option<(Window, NativeWindowToken)>>,
   _observer: Registration,
 }
 
@@ -31,6 +42,8 @@ pub(crate) struct PopupFamily {
   root: FrameNavigationState,
   closing: AtomicBool,
   popups: Mutex<Vec<Arc<Popup>>>,
+  pending: Mutex<Vec<PopupRequest>>,
+  windows: Mutex<Vec<(Window, NativeWindowToken)>>,
   pub(crate) handlers: Arc<Mutex<Vec<Arc<DevToolsProtocolHandler>>>>,
 }
 
@@ -40,6 +53,8 @@ impl PopupFamily {
       root,
       closing: AtomicBool::new(false),
       popups: Mutex::default(),
+      pending: Mutex::default(),
+      windows: Mutex::default(),
       handlers: Arc::default(),
     }
   }
@@ -58,16 +73,60 @@ impl PopupFamily {
         }))
   }
 
+  pub(crate) fn reserve(
+    &self,
+    opener: &FrameNavigationState,
+    browser_id: i32,
+    popup_id: i32,
+  ) -> Option<PopupRequest> {
+    if !self.admits(opener, browser_id) {
+      return None;
+    }
+    let mut pending = self.pending.lock().ok()?;
+    if pending.len() + self.popups.lock().ok()?.len() >= MAX_POPUPS
+      || pending
+        .iter()
+        .any(|request| request.popup_id == popup_id && request.opener.is_same_browser(opener))
+    {
+      return None;
+    }
+    let request = PopupRequest {
+      opener: opener.clone(),
+      popup_id,
+      identity: Arc::new(()),
+    };
+    pending.push(request.clone());
+    Some(request)
+  }
+
+  pub(crate) fn abort(&self, opener: &FrameNavigationState, popup_id: i32) -> Option<PopupRequest> {
+    let mut pending = self.pending.lock().ok()?;
+    let index = pending
+      .iter()
+      .position(|request| request.popup_id == popup_id && request.opener.is_same_browser(opener))?;
+    Some(pending.remove(index))
+  }
+
   pub(crate) fn created(
     &self,
     browser: &Browser,
-    opener: &FrameNavigationState,
+    request: &PopupRequest,
     state: &FrameNavigationState,
   ) {
+    let reserved = self
+      .pending
+      .lock()
+      .map(|mut pending| {
+        let found = pending.iter().any(|entry| entry.is_same(request));
+        pending.retain(|entry| !entry.is_same(request));
+        found
+      })
+      .unwrap_or(false);
+    let opener = &request.opener;
     let Some(host) = browser.host() else {
       return;
     };
-    if !self.admits(opener, host.opener_identifier()) {
+    if !reserved || !self.admits(opener, host.opener_identifier()) {
       state.close();
       host.close_browser(1);
       return;
@@ -83,7 +142,6 @@ impl PopupFamily {
       state: state.clone(),
       opener: opener.clone(),
       closing: AtomicBool::new(false),
-      window: Mutex::default(),
       _observer: observer,
     });
     if let Ok(mut popups) = self.popups.lock() {
@@ -140,27 +198,41 @@ impl PopupFamily {
       .lock()
       .map(|popups| popups.clone())
       .unwrap_or_default();
-    popups
+    // Several popup browser tabs may share one CEF window. Window identity is
+    // owned by the family, never minted independently for each tab.
+    let mut windows = self
+      .windows
+      .lock()
+      .map(|windows| windows.clone())
+      .unwrap_or_default();
+    windows.retain(|(window, _)| window.is_valid() != 0 && window.is_closed() == 0);
+    let observations = popups
       .iter()
       .filter_map(|popup| {
         if popup.closing.load(Ordering::Acquire) || popup.browser.is_valid() == 0 {
           return None;
         }
         let mut browser = popup.browser.clone();
-        let view = browser_view_get_for_browser(Some(&mut browser));
+        let view =
+          browser_view_get_for_browser(Some(&mut browser)).filter(|view| view.is_valid() != 0);
         let observed_window = view
           .as_ref()
           .and_then(ImplView::window)
-          .filter(|window| window.is_closed() == 0);
-        let previous = popup.window.lock().ok()?.clone();
-        let window = observed_window.as_ref().map(|window| {
-          previous
-            .as_ref()
-            .filter(|(previous, _)| window.is_same(Some(&mut View::from(previous))) != 0)
-            .map(|(_, token)| token.clone())
-            .unwrap_or_else(NativeWindowToken::new)
+          .filter(|window| window.is_valid() != 0 && window.is_closed() == 0);
+        let window = observed_window.as_ref().and_then(|window| {
+          if let Some((_, token)) = windows
+            .iter()
+            .find(|(previous, _)| window.is_same(Some(&mut View::from(previous))) != 0)
+          {
+            return Some(token.clone());
+          }
+          if windows.len() >= MAX_POPUPS {
+            return None;
+          }
+          let token = NativeWindowToken::new();
+          windows.push((window.clone(), token.clone()));
+          Some(token)
         });
-        *popup.window.lock().ok()? = observed_window.clone().zip(window.clone());
         let bounds = view.as_ref().map(|view| {
           let rect = view.bounds();
           Rect {
@@ -187,7 +259,11 @@ impl PopupFamily {
         native.set_opener(popup.opener.clone());
         Some(native)
       })
-      .collect()
+      .collect();
+    if let Ok(mut retained) = self.windows.lock() {
+      *retained = windows;
+    }
+    observations
   }
 }
 
@@ -263,6 +339,23 @@ mod tests {
     assert_eq!(revoke_descendants(&root, true, refs()), vec![1, 2]);
     assert!(nodes.iter().all(|node| node.2.load(Ordering::Acquire)));
     assert!(revoke_descendants(&root, true, refs()).is_empty());
+  }
+  #[test]
+  fn pending_popups_are_bounded_and_retained_until_exact_creation_or_abort() {
+    let root = created(1);
+    let family = PopupFamily::new(root.clone());
+    let first = family.reserve(&root, 1, 7).unwrap();
+    assert!(family.reserve(&root, 1, 7).is_none());
+    assert!(family.abort(&created(1), 7).is_none());
+    for id in 8..(7 + MAX_POPUPS as i32) {
+      assert!(family.reserve(&root, 1, id).is_some());
+    }
+    assert!(family.reserve(&root, 1, 1000).is_none());
+    family.closed(&root, 1);
+    assert_eq!(family.pending.lock().unwrap().len(), MAX_POPUPS);
+    assert!(family.abort(&root, 7).unwrap().is_same(&first));
+    assert!(family.abort(&root, 7).is_none());
+    assert!(family.reserve(&root, 1, 1000).is_none());
   }
   #[test]
   fn popup_admission_requires_the_live_exact_native_opener() {
