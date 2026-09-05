@@ -49,6 +49,8 @@ pub struct Webview {
 pub struct WebviewSnapshot {
   /// Native browser identity, distinct for each popup.
   pub browser_id: i32,
+  /// Native JavaScript dialog observation. Unknown is distinct from absent.
+  pub dialogs: crate::NativeDialogObservation,
   /// All-frame document generation validated against the current native frame
   /// identities and load state. `None` means document admission is unavailable.
   pub document: Option<crate::NativeDocumentToken>,
@@ -271,6 +273,7 @@ pub(crate) struct AppWebview {
   pub(crate) browser_id: i32,
   pub(crate) frame_navigation_state: crate::FrameNavigationState,
   pub(crate) popup_family: Arc<crate::popup::PopupFamily>,
+  pub(crate) dialogs: crate::dialog::DialogState,
   pub(crate) host: cef::BrowserHost,
   pub(crate) uri_scheme_protocols: Arc<HashMap<String, Arc<Box<UriSchemeProtocolHandler>>>>,
   pub(crate) devtools_protocol_handlers: Arc<Mutex<Vec<Arc<DevToolsProtocolHandler>>>>,
@@ -440,6 +443,7 @@ impl<T: UserEvent> WinitCefApp<T> {
     let popup_family = Arc::new(crate::popup::PopupFamily::new(
       frame_navigation_state.clone(),
     ));
+    let dialogs = crate::dialog::DialogState::new(frame_navigation_state.clone());
     let frame_state_for_events = frame_navigation_state.clone();
     let frame_event_handler = pending
       .platform_specific_attributes
@@ -581,6 +585,7 @@ impl<T: UserEvent> WinitCefApp<T> {
           &browser,
           devtools_protocol_handlers.clone(),
           pending_initial_loads.clone(),
+          dialogs.clone(),
         )));
         load_initial_url_after_registering_initialization_scripts(
           &browser,
@@ -599,6 +604,7 @@ impl<T: UserEvent> WinitCefApp<T> {
             browser_id,
             frame_navigation_state,
             popup_family,
+            dialogs,
             host,
             uri_scheme_protocols,
             devtools_protocol_handlers,
@@ -651,11 +657,14 @@ impl<T: UserEvent> WinitCefApp<T> {
         else {
           return;
         };
+        let document = child
+          .frame_navigation_state
+          .observe_document(&child.browser);
+        let dialogs = child.dialogs.snapshot(document.as_ref());
         let snapshot = WebviewSnapshot {
           browser_id: child.browser_id,
-          document: child
-            .frame_navigation_state
-            .observe_document(&child.browser),
+          dialogs,
+          document,
           window_label: Some(appwindow.label.clone()),
           window: Some(appwindow.lifetime.clone()),
           parent_matches: child.native_parent_matches(appwindow),
@@ -931,6 +940,7 @@ impl<T: UserEvent> WinitCefApp<T> {
             &child.browser,
             child.devtools_protocol_handlers.clone(),
             Arc::new(Mutex::new(HashMap::new())),
+            child.dialogs.clone(),
           ) {
             *child.devtools_observer_registration.lock().unwrap() = Some(registration);
             let _ = tx.send(Ok(()));
@@ -1456,6 +1466,7 @@ cef::wrap_dev_tools_message_observer! {
   struct TauriDevToolsProtocolObserver {
     handlers: Arc<Mutex<Vec<Arc<DevToolsProtocolHandler>>>>,
     pending_initial_loads: PendingInitialLoads,
+    dialogs: crate::dialog::DialogState,
   }
 
   impl DevToolsMessageObserver {
@@ -1507,10 +1518,14 @@ cef::wrap_dev_tools_message_observer! {
 
     fn on_dev_tools_event(
       &self,
-      _browser: Option<&mut Browser>,
+      browser: Option<&mut Browser>,
       method: Option<&CefString>,
       params: Option<&[u8]>,
     ) {
+      if let (Some(browser), Some(method)) = (browser, method)
+        && self.dialogs.accepts_browser(browser.identifier()) {
+        self.dialogs.on_event(&method.to_string(), params.unwrap_or_default());
+      }
       let protocol = DevToolsProtocol::Event {
         method: method.map(|m| format!("{m}")).unwrap_or_default(),
         params: params.map(|p| p.to_vec()).unwrap_or_default(),
@@ -1587,10 +1602,16 @@ pub(crate) fn add_dev_tools_observer(
   browser: &Browser,
   handlers: Arc<Mutex<Vec<Arc<DevToolsProtocolHandler>>>>,
   pending_initial_loads: PendingInitialLoads,
+  dialogs: crate::dialog::DialogState,
 ) -> Option<cef::Registration> {
   browser.host().and_then(|host| {
-    let mut observer = TauriDevToolsProtocolObserver::new(handlers, pending_initial_loads);
-    host.add_dev_tools_message_observer(Some(&mut observer))
+    let mut observer = TauriDevToolsProtocolObserver::new(handlers, pending_initial_loads, dialogs);
+    let registration = host.add_dev_tools_message_observer(Some(&mut observer))?;
+    if let Ok(id) = crate::allocate_devtools_message_id() {
+      let message = serde_json::json!({"id":id,"method":"Page.enable","params":{}}).to_string();
+      let _ = host.send_dev_tools_message(Some(message.as_bytes()));
+    }
+    Some(registration)
   })
 }
 
@@ -1655,16 +1676,7 @@ fn register_initialization_scripts(
     return Ok(false);
   };
 
-  let page_enable_message_id = crate::allocate_devtools_message_id()?;
   let message_id = crate::allocate_devtools_message_id()?;
-  let page_enable_message = serde_json::json!({
-    "id": page_enable_message_id,
-    "method": "Page.enable",
-    "params": {}
-  })
-  .to_string();
-  let _ = host.send_dev_tools_message(Some(page_enable_message.as_bytes()));
-
   let message = serde_json::json!({
     "id": message_id,
     "method": "Page.addScriptToEvaluateOnNewDocument",

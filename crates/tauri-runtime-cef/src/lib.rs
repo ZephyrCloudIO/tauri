@@ -7,8 +7,12 @@
 
 mod cef_impl;
 mod devtools;
+mod dialog;
 mod external_message_pump;
 mod frame;
+pub use dialog::{
+  NativeDialogKind, NativeDialogObservation, NativeDialogSnapshot, NativeDialogToken,
+};
 mod frame_navigation;
 mod platform;
 mod popup;

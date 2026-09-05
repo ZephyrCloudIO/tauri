@@ -161,6 +161,11 @@ pub use tauri_runtime_cef::{
 #[cfg(feature = "cef")]
 pub use tauri_runtime_cef::{FrameEvent as CefFrameEvent, FrameEventKind as CefFrameEventKind};
 #[cfg(feature = "cef")]
+pub use tauri_runtime_cef::{
+  NativeDialogKind as CefNativeDialogKind, NativeDialogObservation as CefNativeDialogObservation,
+  NativeDialogToken as CefNativeDialogToken,
+};
+#[cfg(feature = "cef")]
 pub use tauri_runtime_cef::{Webview as CefWebview, WebviewSnapshot as CefWebviewSnapshot};
 
 #[cfg(all(feature = "wry", target_os = "android"))]

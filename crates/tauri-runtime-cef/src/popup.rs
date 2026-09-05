@@ -36,6 +36,7 @@ struct Popup {
   opener: FrameNavigationState,
   closing: AtomicBool,
   _observer: Registration,
+  dialogs: crate::dialog::DialogState,
 }
 
 pub(crate) struct PopupFamily {
@@ -131,8 +132,13 @@ impl PopupFamily {
       host.close_browser(1);
       return;
     }
-    let Some(observer) = add_dev_tools_observer(browser, self.handlers.clone(), Arc::default())
-    else {
+    let dialogs = crate::dialog::DialogState::new(state.clone());
+    let Some(observer) = add_dev_tools_observer(
+      browser,
+      self.handlers.clone(),
+      Arc::default(),
+      dialogs.clone(),
+    ) else {
       state.close();
       host.close_browser(1);
       return;
@@ -143,6 +149,7 @@ impl PopupFamily {
       opener: opener.clone(),
       closing: AtomicBool::new(false),
       _observer: observer,
+      dialogs,
     });
     if let Ok(mut popups) = self.popups.lock() {
       popups.push(popup);
@@ -246,9 +253,12 @@ impl PopupFamily {
           .map(|(view, window)| {
             view.is_drawn() != 0 && window.is_visible() != 0 && window.is_minimized() == 0
           });
+        let document = popup.state.observe_document(&browser);
+        let dialogs = popup.dialogs.snapshot(document.as_ref());
         let snapshot = WebviewSnapshot {
           browser_id: browser.identifier(),
-          document: popup.state.observe_document(&browser),
+          dialogs,
+          document,
           window_label: None,
           window,
           parent_matches: observed_window.as_ref().map(|_| true),
