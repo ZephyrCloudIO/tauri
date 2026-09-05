@@ -154,14 +154,14 @@ pub use tauri_runtime_cef::NativeDocumentToken as CefNativeDocumentToken;
 #[cfg(feature = "cef")]
 pub use tauri_runtime_cef::NativeWindowToken as CefNativeWindowToken;
 #[cfg(feature = "cef")]
-pub use tauri_runtime_cef::WebviewSnapshot as CefWebviewSnapshot;
-#[cfg(feature = "cef")]
 pub use tauri_runtime_cef::{
   DevToolsMessageIdExhausted as CefDevToolsMessageIdExhausted,
   allocate_devtools_message_id as allocate_cef_devtools_message_id,
 };
 #[cfg(feature = "cef")]
 pub use tauri_runtime_cef::{FrameEvent as CefFrameEvent, FrameEventKind as CefFrameEventKind};
+#[cfg(feature = "cef")]
+pub use tauri_runtime_cef::{Webview as CefWebview, WebviewSnapshot as CefWebviewSnapshot};
 
 #[cfg(all(feature = "wry", target_os = "android"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "wry", target_os = "android"))))]

@@ -309,6 +309,8 @@ pub(crate) type AfterWindowCreationCallback = Box<dyn for<'a> Fn(RawWindow<'a>) 
 pub(crate) enum Message<T: UserEvent> {
   EventLoop(EventLoopMessage),
   BrowserClosed(WindowId, u32),
+  PopupCreated(i32, Arc<crate::popup::PopupFamily>),
+  PopupClosed(i32),
   /// CEF handed us the teardown of a webview's browser, keyed by the webview's
   /// process-unique id. See `TauriCefChildLifeSpanHandler::do_close`.
   #[cfg(any(target_os = "macos", windows))]
@@ -443,6 +445,7 @@ pub(crate) struct AppState<T: UserEvent> {
   pub(crate) winid_id_to_window_id_map: HashMap<WinitWindowId, WindowId>,
   pub(crate) callback: Box<dyn FnMut(RunEvent<T>)>,
   pub(crate) live_browsers: usize,
+  live_popups: HashMap<i32, Arc<crate::popup::PopupFamily>>,
   pub(crate) exiting: bool,
 }
 
@@ -468,6 +471,7 @@ impl<T: UserEvent> WinitCefApp<T> {
         winid_id_to_window_id_map: HashMap::new(),
         callback,
         live_browsers: 0,
+        live_popups: HashMap::new(),
         exiting: false,
       },
       scheme_registry,
@@ -505,6 +509,13 @@ impl<T: UserEvent> WinitCefApp<T> {
   fn handle_message(&mut self, event_loop: &dyn ActiveEventLoop, message: Message<T>) {
     match message {
       Message::EventLoop(message) => self.handle_event_loop_message(event_loop, message),
+      Message::PopupCreated(id, family) => {
+        self.state.live_popups.insert(id, family);
+      }
+      Message::PopupClosed(id) => {
+        self.state.live_popups.remove(&id);
+        self.exit_if_done(event_loop);
+      }
       Message::BrowserClosed(_window_id, webview_id) => {
         // Standalone webview.close() keeps the child in state until this
         // callback, so cleanup happens here. Window/app teardown removes child
@@ -789,6 +800,9 @@ impl<T: UserEvent> WinitCefApp<T> {
     // shutdown drain is still enforced by live_browsers.
     for child in &appwindow.children {
       self.remove_scheme_handler_entries(child);
+      child
+        .popup_family
+        .closed(&child.frame_navigation_state, child.browser_id);
       child.host.close_browser(1);
     }
     self.exit_if_done(event_loop);
@@ -852,6 +866,9 @@ impl<T: UserEvent> WinitCefApp<T> {
     for appwindow in self.state.windows.values() {
       for child in &appwindow.children {
         self.remove_scheme_handler_entries(child);
+        child
+          .popup_family
+          .closed(&child.frame_navigation_state, child.browser_id);
         child.host.close_browser(1);
       }
     }
@@ -874,7 +891,7 @@ impl<T: UserEvent> WinitCefApp<T> {
   }
 
   fn exit_if_done(&mut self, event_loop: &dyn ActiveEventLoop) {
-    if self.state.live_browsers != 0 {
+    if self.state.live_browsers != 0 || !self.state.live_popups.is_empty() {
       return;
     }
 

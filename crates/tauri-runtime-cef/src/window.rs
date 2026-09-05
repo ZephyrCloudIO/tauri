@@ -325,7 +325,7 @@ type SoftbufferSurface = softbuffer::Surface<SoftbufferWindowHandle, SoftbufferW
 pub struct NativeWindowToken(Arc<()>);
 
 impl NativeWindowToken {
-  fn new() -> Self {
+  pub(crate) fn new() -> Self {
     Self(Arc::new(()))
   }
 }

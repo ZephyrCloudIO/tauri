@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::sync::{Arc, Mutex, Weak, mpsc::Sender};
 
 use cef::*;
 use tauri_runtime::{UserEvent, window::WindowId};
@@ -79,6 +79,9 @@ wrap_client! {
     drag_drop_event_target: DragDropEventTarget,
     drag_drop_handler_enabled: bool,
     drag_drop_state: Arc<Mutex<DragDropState>>,
+    frame_navigation_state: crate::FrameNavigationState,
+    popup_family: Weak<crate::popup::PopupFamily>,
+    opener: Option<crate::FrameNavigationState>,
     pub(crate) handlers: TauriCefBrowserClientHandlers<T>,
     proxy: WinitEventLoopProxy,
     sender: Sender<Message<T>>,
@@ -112,6 +115,31 @@ wrap_client! {
     }
 
     fn life_span_handler(&self) -> Option<LifeSpanHandler> {
+      let context = self.context.clone();
+      let window_id = self.window_id;
+      let webview_id = self.webview_id;
+      let label = self.label.clone();
+      let devtools_enabled = self.devtools_enabled;
+      let target = self.drag_drop_event_target;
+      let navigation_handler = self.handlers.navigation_handler.clone();
+      let new_window_handler = self.handlers.new_window_handler.clone();
+      let family = self.popup_family.clone();
+      let create_popup: Arc<life_span::PopupClientFactory> = Arc::new(move |opener, state| {
+        let events = state.clone();
+        TauriCefBrowserClient::new(
+          context.clone(), window_id, webview_id, label.clone(), None,
+          devtools_enabled, target, false, Arc::default(), state,
+          family.clone(), Some(opener),
+          TauriCefBrowserClientHandlers {
+            frame_event_handler: Some(Arc::new(move |event| events.on_frame_event(&event))),
+            navigation_handler: navigation_handler.clone(),
+            new_window_handler: new_window_handler.clone(),
+            ipc_handler: None, on_page_load_handler: None,
+            document_title_changed_handler: None, address_changed_handler: None,
+            download_handler: None, web_content_process_terminate_handler: None,
+          }, context.proxy.clone(), context.sender.clone(),
+        )
+      });
       Some(TauriCefChildLifeSpanHandler::new(
         self.sender.clone(),
         self.proxy.clone(),
@@ -120,6 +148,8 @@ wrap_client! {
         self.context.clone(),
         self.handlers.new_window_handler.clone(),
         self.initial_url.clone(),
+        self.frame_navigation_state.clone(),
+        self.popup_family.clone(), self.opener.clone(), create_popup,
       ))
     }
 
@@ -160,11 +190,13 @@ wrap_client! {
 
     fn on_process_message_received(
       &self,
-      _browser: Option<&mut Browser>,
+      browser: Option<&mut Browser>,
       frame: Option<&mut Frame>,
       source_process: ProcessId,
       message: Option<&mut ProcessMessage>,
     ) -> std::os::raw::c_int {
+      // A CEF popup (including DevTools) never inherits the root IPC identity.
+      if self.opener.is_some() || browser.as_ref().is_none_or(|browser| browser.is_popup() != 0 || !self.frame_navigation_state.has_browser_id(browser.identifier())) { return 0; }
       ipc::on_process_message_received(self, frame, source_process, message)
     }
   }

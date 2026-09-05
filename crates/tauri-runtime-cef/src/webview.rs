@@ -37,6 +37,8 @@ pub struct Webview {
   browser: cef::Browser,
   snapshot: WebviewSnapshot,
   frame_navigation_state: crate::FrameNavigationState,
+  popups: Vec<Webview>,
+  opener: Option<crate::FrameNavigationState>,
 }
 
 /// Native state sampled on the CEF UI thread immediately before a
@@ -50,12 +52,13 @@ pub struct WebviewSnapshot {
   /// All-frame document generation validated against the current native frame
   /// identities and load state. `None` means document admission is unavailable.
   pub document: Option<crate::NativeDocumentToken>,
-  /// Runtime window that owns this webview.
-  pub window_label: String,
+  /// Runtime window label; CEF-owned popups have no Tauri window label.
+  pub window_label: Option<String>,
   /// Opaque lifetime of the runtime window. Labels and native handle values
   /// may be reused after teardown; this token distinguishes their replacements.
-  pub window: crate::NativeWindowToken,
-  /// Whether the actual native parent matches that runtime window.
+  /// `None` means the runtime could not observe a native window lifetime.
+  pub window: Option<crate::NativeWindowToken>,
+  /// Whether the actual native parent matches the observed native window.
   /// `None` means the platform could not establish the relationship.
   pub parent_matches: Option<bool>,
   /// Current bounds relative to the native parent, in the indicated DPI units.
@@ -75,6 +78,8 @@ impl Webview {
       browser,
       snapshot,
       frame_navigation_state,
+      popups: Vec::new(),
+      opener: None,
     }
   }
 
@@ -88,6 +93,29 @@ impl Webview {
   /// Unlike `snapshot`, this handle follows subsequent native frame events.
   pub fn frame_navigation_state(&self) -> &crate::FrameNavigationState {
     &self.frame_navigation_state
+  }
+
+  pub(crate) fn set_opener(&mut self, opener: crate::FrameNavigationState) {
+    self.opener = Some(opener);
+  }
+
+  /// Native CEF-owned popup descendants sampled in this same UI-thread callback.
+  /// Popup windows have no Tauri label and retain their actual CEF opener.
+  pub fn popups(&self) -> &[Webview] {
+    &self.popups
+  }
+
+  /// Exact native opener lifetime, if this is a CEF-owned popup.
+  pub fn opener(&self) -> Option<&crate::FrameNavigationState> {
+    self.opener.as_ref()
+  }
+
+  /// Select an observed document within this runtime-owned browser family.
+  /// The returned snapshot is valid only for the current native callback.
+  pub fn for_document(&self, document: &crate::NativeDocumentToken) -> Option<&Webview> {
+    std::iter::once(self)
+      .chain(self.popups.iter())
+      .find(|view| view.snapshot.document.as_ref() == Some(document))
   }
 
   /// Returns the [`cef::Browser`] backing this webview.
@@ -242,6 +270,7 @@ pub(crate) struct AppWebview {
   pub(crate) browser: cef::Browser,
   pub(crate) browser_id: i32,
   pub(crate) frame_navigation_state: crate::FrameNavigationState,
+  pub(crate) popup_family: Arc<crate::popup::PopupFamily>,
   pub(crate) host: cef::BrowserHost,
   pub(crate) uri_scheme_protocols: Arc<HashMap<String, Arc<Box<UriSchemeProtocolHandler>>>>,
   pub(crate) devtools_protocol_handlers: Arc<Mutex<Vec<Arc<DevToolsProtocolHandler>>>>,
@@ -408,6 +437,9 @@ impl<T: UserEvent> WinitCefApp<T> {
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     let web_content_process_terminate_handler: Option<Arc<dyn Fn() + Send>> = None;
     let frame_navigation_state = crate::FrameNavigationState::new();
+    let popup_family = Arc::new(crate::popup::PopupFamily::new(
+      frame_navigation_state.clone(),
+    ));
     let frame_state_for_events = frame_navigation_state.clone();
     let frame_event_handler = pending
       .platform_specific_attributes
@@ -419,7 +451,9 @@ impl<T: UserEvent> WinitCefApp<T> {
     let handlers = browser_client::TauriCefBrowserClientHandlers {
       frame_event_handler: Some(Arc::new(move |event| {
         frame_state_for_events.on_frame_event(&event);
-        if let Some(handler) = &frame_event_handler {
+        if frame_state_for_events.has_browser_id(event.browser_id)
+          && let Some(handler) = &frame_event_handler
+        {
           handler(event);
         }
       })),
@@ -443,6 +477,9 @@ impl<T: UserEvent> WinitCefApp<T> {
       drag_drop_event_target,
       drag_drop_handler_enabled,
       drag_drop_state,
+      frame_navigation_state.clone(),
+      Arc::downgrade(&popup_family),
+      None,
       handlers,
       context.proxy.clone(),
       context.sender.clone(),
@@ -538,7 +575,7 @@ impl<T: UserEvent> WinitCefApp<T> {
           }
         }
 
-        let devtools_protocol_handlers = Arc::new(Mutex::new(Vec::new()));
+        let devtools_protocol_handlers = popup_family.handlers.clone();
         let pending_initial_loads: PendingInitialLoads = Arc::new(Mutex::new(HashMap::new()));
         let devtools_observer_registration = Arc::new(Mutex::new(add_dev_tools_observer(
           &browser,
@@ -561,6 +598,7 @@ impl<T: UserEvent> WinitCefApp<T> {
             browser,
             browser_id,
             frame_navigation_state,
+            popup_family,
             host,
             uri_scheme_protocols,
             devtools_protocol_handlers,
@@ -618,17 +656,19 @@ impl<T: UserEvent> WinitCefApp<T> {
           document: child
             .frame_navigation_state
             .observe_document(&child.browser),
-          window_label: appwindow.label.clone(),
-          window: appwindow.lifetime.clone(),
+          window_label: Some(appwindow.label.clone()),
+          window: Some(appwindow.lifetime.clone()),
           parent_matches: child.native_parent_matches(appwindow),
           bounds: child.bounds(),
           visible: child.native_visible(),
         };
-        callback(Webview::new(
+        let mut native = Webview::new(
           child.browser.clone(),
           snapshot,
           child.frame_navigation_state.clone(),
-        ));
+        );
+        native.popups = child.popup_family.observe();
+        callback(native);
         return;
       }
       message => message,

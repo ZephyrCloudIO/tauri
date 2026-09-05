@@ -11,6 +11,7 @@ mod external_message_pump;
 mod frame;
 mod frame_navigation;
 mod platform;
+mod popup;
 mod runtime;
 mod webview;
 pub use devtools::{DevToolsMessageIdExhausted, allocate_devtools_message_id};

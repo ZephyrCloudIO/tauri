@@ -68,6 +68,19 @@ impl FrameNavigationState {
     Arc::ptr_eq(&self.state, &other.state)
   }
 
+  pub(crate) fn has_browser_id(&self, browser_id: i32) -> bool {
+    self
+      .state
+      .lock()
+      .is_ok_and(|state| state.browser_id == Some(browser_id))
+  }
+
+  pub(crate) fn close(&self) {
+    if let Ok(mut state) = self.state.lock() {
+      state.exhausted = true;
+    }
+  }
+
   pub(crate) fn observe_document(&self, browser: &cef::Browser) -> Option<NativeDocumentToken> {
     use cef::ImplBrowser;
     let generation = self.ready_generation()?;
