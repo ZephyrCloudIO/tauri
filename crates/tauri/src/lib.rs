@@ -142,6 +142,18 @@ pub type CefHandle = tauri_runtime_cef::CefRuntimeHandle<EventLoopMessage>;
 #[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
 pub use tauri_runtime_cef::run_cef_helper_process;
 
+/// Creates the CEF-compatible AppKit application before displaying native startup UI.
+///
+/// This does not initialize CEF or a browser profile. Call it on the main thread before
+/// any native dialog creates an `NSApplication`. Repeated calls are safe.
+///
+/// # Panics
+///
+/// Panics outside the main thread or if a different application class already exists.
+#[cfg(all(feature = "cef", target_os = "macos"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "cef", target_os = "macos"))))]
+pub use tauri_runtime_cef::prepare_macos_application as prepare_cef_application;
+
 /// DevTools protocol message type for the CEF runtime.
 #[cfg(feature = "cef")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cef")))]

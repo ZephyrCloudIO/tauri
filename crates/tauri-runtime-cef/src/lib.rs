@@ -14,6 +14,8 @@ mod window;
 mod window_builder;
 mod window_handle;
 
+#[cfg(target_os = "macos")]
+pub use platform::macos::setup_application as prepare_macos_application;
 pub use runtime::*;
 pub use webview::*;
 pub use window::CefWindowDispatcher;
