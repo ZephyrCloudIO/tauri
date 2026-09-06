@@ -17,6 +17,28 @@ use crate::runtime::{CefRuntime, Message, NewWindowOpener, RuntimeContext};
 pub(super) type PopupClientFactory =
   dyn Fn(crate::popup::PopupRequest, crate::FrameNavigationState) -> Client;
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use tauri_runtime::webview::NewWindowFeatures;
+
+  #[test]
+  fn popup_source_observation_is_available_without_dispatch_and_redacted_from_debug() {
+    let features = NewWindowFeatures::<(), CefRuntime<()>>::new(None, None, NewWindowOpener {});
+    assert!(features.source_url().is_none());
+
+    let source = url::Url::parse("https://example.com/private?token=fixture-secret").unwrap();
+    let features = features.with_source_url(Some(source.clone()));
+    assert_eq!(features.source_url(), Some(&source));
+    let debug = format!("{features:?}");
+    assert!(debug.contains("source_url_observed: true"));
+    assert!(!debug.contains("private"));
+    assert!(!debug.contains("fixture-secret"));
+
+    assert!(features.with_source_url(None).source_url().is_none());
+  }
+}
+
 // There is some race condition on CEF that causes the app loading to fail
 // when there is a network service crash:
 // "[85296:47750637:0127/131203.017395:ERROR:content/browser/network_service_instance_impl.cc:610] Network service crashed or was terminated, restarting service."
@@ -112,7 +134,11 @@ wrap_life_span_handler! {
           (features.x_set != 0 && features.y_set != 0)
             .then(|| LogicalPosition::new(features.x as f64, features.y as f64))
         });
-        handler(url, tauri_runtime::webview::NewWindowFeatures::new(size, position, NewWindowOpener {}))
+        let source_url = browser.as_deref()
+          .and_then(|browser| browser.main_frame())
+          .and_then(|frame| url::Url::parse(&CefString::from(&frame.url()).to_string()).ok());
+        handler(url, tauri_runtime::webview::NewWindowFeatures::new(size, position, NewWindowOpener {})
+          .with_source_url(source_url))
       } else { tauri_runtime::webview::NewWindowResponse::Allow };
       match response {
         tauri_runtime::webview::NewWindowResponse::Allow => {

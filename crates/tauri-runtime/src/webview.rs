@@ -92,11 +92,22 @@ pub enum PageLoadEvent {
 }
 
 /// Window features of a window requested to open.
-#[derive(Debug)]
 pub struct NewWindowFeatures<T: UserEvent, R: Runtime<T>> {
   pub(crate) size: Option<crate::dpi::LogicalSize<f64>>,
   pub(crate) position: Option<crate::dpi::LogicalPosition<f64>>,
   pub(crate) opener: R::WindowOpener,
+  source_url: Option<Url>,
+}
+
+impl<T: UserEvent, R: Runtime<T>> std::fmt::Debug for NewWindowFeatures<T, R> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("NewWindowFeatures")
+      .field("size", &self.size)
+      .field("position", &self.position)
+      .field("opener", &self.opener)
+      .field("source_url_observed", &self.source_url.is_some())
+      .finish()
+  }
 }
 
 impl<T: UserEvent, R: Runtime<T>> NewWindowFeatures<T, R> {
@@ -109,7 +120,24 @@ impl<T: UserEvent, R: Runtime<T>> NewWindowFeatures<T, R> {
       size,
       position,
       opener,
+      source_url: None,
     }
+  }
+
+  /// Attach the opener's main-frame URL observed in the native popup callback.
+  /// Runtimes must leave this unavailable when the source cannot be observed.
+  pub fn with_source_url(mut self, source_url: Option<Url>) -> Self {
+    self.source_url = source_url;
+    self
+  }
+
+  /// The opener's main-frame URL at the native popup request, when available.
+  ///
+  /// CEF supplies this directly from the callback's browser. Reading a blocking
+  /// webview getter from that callback can deadlock the UI thread because CEF's
+  /// external message pump may run outside a winit dispatch callback.
+  pub fn source_url(&self) -> Option<&Url> {
+    self.source_url.as_ref()
   }
 
   /// Specifies the size of the content area
