@@ -19,12 +19,12 @@ use http::HeaderMap;
 use serde::Serialize;
 use tauri_macros::default_runtime;
 
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::NewWindowOpener as CefWindowOpener;
 #[cfg(feature = "wry")]
 pub use tauri_runtime_wry::NewWindowOpener as WryWindowOpener;
 
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 use crate::CefDevToolsProtocol;
 pub use tauri_runtime::webview::{
   NewWindowFeatures, PageLoadEvent, PermissionKind, PermissionResponse, ScrollBarStyle,
@@ -174,11 +174,11 @@ pub struct InvokeRequest {
 /// (e.g. [`tauri_runtime_wry::Webview`] for the wry runtime or
 /// [`tauri_runtime_cef::Webview`] for the CEF runtime), which exposes the
 /// platform webview APIs.
-#[cfg(any(feature = "wry", feature = "cef"))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "wry", feature = "cef"))))]
+#[cfg(any(feature = "wry", all(desktop, feature = "cef")))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "wry", all(desktop, feature = "cef")))))]
 pub struct PlatformWebview<R: Runtime>(R::Webview);
 
-#[cfg(any(feature = "wry", feature = "cef"))]
+#[cfg(any(feature = "wry", all(desktop, feature = "cef")))]
 impl<R: Runtime> std::ops::Deref for PlatformWebview<R> {
   type Target = R::Webview;
 
@@ -246,7 +246,7 @@ unstable_struct!(
   }
 );
 
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 #[cfg_attr(not(feature = "unstable"), allow(dead_code))]
 impl<R: Runtime> WebviewBuilder<R> {
   /// Observes native CEF lifecycle events for main and child frames.
@@ -278,7 +278,7 @@ impl<R: Runtime> WebviewBuilder<R> {
   }
 }
 
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 #[cfg_attr(not(feature = "unstable"), allow(dead_code))]
 impl WebviewBuilder<crate::Cef> {
   /// Sets the browser runtime style.
@@ -756,7 +756,7 @@ tauri::Builder::<tauri::Wry>::new()
   ///
   /// ```rust,no_run
   /// use tauri::webview::{WebviewBuilder, PermissionKind, PermissionResponse};
-  /// tauri::Builder::default()
+  /// tauri::Builder::<tauri::Wry>::new()
   ///   .setup(|app| {
   ///     let window = tauri::window::WindowBuilder::new(app, "label").build()?;
   ///     let webview_builder = WebviewBuilder::new("core", tauri::WebviewUrl::App("index.html".into()))
@@ -1827,7 +1827,7 @@ impl<R: Runtime> Webview<R> {
     doc = "- With the wry runtime: [`tauri_runtime_wry::Webview`]."
   )]
   #[cfg_attr(
-    feature = "cef",
+    all(desktop, feature = "cef"),
     doc = "- With the CEF runtime: [`tauri_runtime_cef::Webview`], whose underlying CEF browser is accessible via [`browser`](tauri_runtime_cef::Webview::browser)."
   )]
   ///
@@ -1882,8 +1882,8 @@ tauri::Builder::<tauri::Wry>::new()
 ```
   "####
   )]
-  #[cfg(any(feature = "wry", feature = "cef"))]
-  #[cfg_attr(docsrs, doc(cfg(any(feature = "wry", feature = "cef"))))]
+  #[cfg(any(feature = "wry", all(desktop, feature = "cef")))]
+  #[cfg_attr(docsrs, doc(cfg(any(feature = "wry", all(desktop, feature = "cef")))))]
   pub fn with_webview<F: FnOnce(PlatformWebview<R>) + Send + 'static>(
     &self,
     f: F,
@@ -2426,7 +2426,7 @@ tauri::Builder::<tauri::Wry>::new()
 }
 
 /// APIs specific to the CEF runtime.
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 impl Webview<crate::Cef> {
   /// Send a message to the DevTools agent. The message should be a UTF-8 encoded JSON
   /// string following the Chrome DevTools Protocol format.

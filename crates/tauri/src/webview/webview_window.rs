@@ -50,7 +50,7 @@ pub struct WebviewWindowBuilder<'a, R: Runtime, M: Manager<R>> {
   webview_builder: WebviewBuilder<R>,
 }
 
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 #[cfg_attr(not(feature = "unstable"), allow(dead_code))]
 impl<'a, R: Runtime, M: Manager<R>> WebviewWindowBuilder<'a, R, M> {
   /// Observes native lifecycle events for every CEF frame.
@@ -65,7 +65,7 @@ impl<'a, R: Runtime, M: Manager<R>> WebviewWindowBuilder<'a, R, M> {
   }
 }
 
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 #[cfg_attr(not(feature = "unstable"), allow(dead_code))]
 impl<'a, M: Manager<crate::Cef>> WebviewWindowBuilder<'a, crate::Cef, M> {
   /// Sets the browser runtime style.
@@ -509,7 +509,7 @@ tauri::Builder::<tauri::Wry>::new()
   ///   webview::{PermissionKind, PermissionResponse, WebviewWindowBuilder},
   ///   WebviewUrl,
   /// };
-  /// tauri::Builder::default()
+  /// tauri::Builder::<tauri::Wry>::new()
   ///   .setup(|app| {
   ///     WebviewWindowBuilder::new(app, "core", WebviewUrl::App("index.html".into()))
   ///       .on_permission_request(|_, kind| match kind {
@@ -2488,7 +2488,7 @@ impl<R: Runtime> WebviewWindow<R> {
     doc = "- With the wry runtime: [`tauri_runtime_wry::Webview`]."
   )]
   #[cfg_attr(
-    feature = "cef",
+    all(desktop, feature = "cef"),
     doc = "- With the CEF runtime: [`tauri_runtime_cef::Webview`], whose underlying CEF browser is accessible via [`browser`](tauri_runtime_cef::Webview::browser)."
   )]
   ///
@@ -2541,8 +2541,8 @@ impl<R: Runtime> WebviewWindow<R> {
   /// }
   /// ```
   #[allow(clippy::needless_doctest_main)] // To avoid a large diff
-  #[cfg(any(feature = "wry", feature = "cef"))]
-  #[cfg_attr(docsrs, doc(cfg(any(feature = "wry", feature = "cef"))))]
+  #[cfg(any(feature = "wry", all(desktop, feature = "cef")))]
+  #[cfg_attr(docsrs, doc(cfg(any(feature = "wry", all(desktop, feature = "cef")))))]
   pub fn with_webview<F: FnOnce(crate::webview::PlatformWebview<R>) + Send + 'static>(
     &self,
     f: F,
@@ -2778,7 +2778,7 @@ impl<R: Runtime> WebviewWindow<R> {
 }
 
 /// APIs specific to the CEF runtime.
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 impl WebviewWindow<crate::Cef> {
   /// Send a message to the DevTools agent. The message should be a UTF-8 encoded JSON
   /// string following the Chrome DevTools Protocol format.

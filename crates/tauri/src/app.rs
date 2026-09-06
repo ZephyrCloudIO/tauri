@@ -1578,16 +1578,19 @@ impl Default for Builder<crate::Wry> {
 }
 
 /// Make `Cef` the default `Runtime` for `Builder`
-#[cfg(feature = "cef")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
+#[cfg(all(desktop, feature = "cef"))]
+#[cfg_attr(docsrs, doc(cfg(all(desktop, feature = "cef"))))]
 impl Default for Builder<crate::Cef> {
   fn default() -> Self {
     Self::new()
   }
 }
 
-#[cfg(not(any(feature = "wry", feature = "cef")))]
-#[cfg_attr(docsrs, doc(cfg(not(any(feature = "wry", feature = "cef")))))]
+#[cfg(not(any(feature = "wry", all(desktop, feature = "cef"))))]
+#[cfg_attr(
+  docsrs,
+  doc(cfg(not(any(feature = "wry", all(desktop, feature = "cef")))))
+)]
 impl<R: Runtime> Default for Builder<R> {
   fn default() -> Self {
     Self::new()
@@ -1864,7 +1867,7 @@ tauri::Builder::<tauri::Wry>::new()
   ///
   /// ```rust,no_run
   /// use tauri::webview::{PermissionKind, PermissionResponse};
-  /// tauri::Builder::default()
+  /// tauri::Builder::<tauri::Wry>::new()
   ///   .on_permission_request(|_, kind| match kind {
   ///     PermissionKind::Geolocation => PermissionResponse::Allow,
   ///     PermissionKind::Notifications => PermissionResponse::Allow,

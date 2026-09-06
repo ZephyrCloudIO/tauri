@@ -4738,11 +4738,13 @@ You may have it installed on another user account, but it is not available for t
   #[allow(unused_mut)]
   let PendingWebview {
     webview_attributes,
+    #[cfg(desktop)]
     platform_specific_attributes,
     uri_scheme_protocols,
     label,
     ipc_handler,
     url,
+    #[cfg(desktop)]
     opener,
     address_changed_handler,
     navigation_handler,

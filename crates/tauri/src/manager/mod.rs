@@ -807,7 +807,7 @@ mod test {
     );
   }
 
-  #[cfg(feature = "cef")]
+  #[cfg(all(desktop, feature = "cef"))]
   #[test]
   fn check_get_url_cef() {
     let context = generate_context!("test/fixture/src-tauri/tauri.conf.json", crate, test = true);

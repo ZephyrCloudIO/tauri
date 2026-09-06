@@ -10,7 +10,7 @@ mod tray;
 
 use serde::Serialize;
 use tauri::{
-  App, Emitter, Listener, Runtime, WebviewUrl,
+  App, Emitter, Listener, WebviewUrl,
   ipc::Channel,
   webview::{PageLoadEvent, WebviewWindowBuilder},
 };
@@ -20,9 +20,9 @@ use tauri_plugin_sample::{PingRequest, SampleExt};
 
 #[cfg(test)]
 type TauriRuntime = tauri::test::MockRuntime;
-#[cfg(all(not(test), feature = "cef"))]
+#[cfg(all(desktop, not(test), feature = "cef"))]
 type TauriRuntime = tauri::Cef;
-#[cfg(all(not(test), not(feature = "cef")))]
+#[cfg(all(not(test), not(all(desktop, feature = "cef"))))]
 type TauriRuntime = tauri::Wry;
 
 #[derive(Clone, Serialize)]
@@ -31,13 +31,13 @@ struct Reply {
 }
 
 #[cfg(target_os = "macos")]
-pub struct AppMenu<R: Runtime>(pub std::sync::Mutex<Option<tauri::menu::Menu<R>>>);
+pub struct AppMenu<R: tauri::Runtime>(pub std::sync::Mutex<Option<tauri::menu::Menu<R>>>);
 
 #[cfg(all(desktop, not(test)))]
-pub struct PopupMenu<R: Runtime>(#[allow(dead_code)] tauri::menu::Menu<R>);
+pub struct PopupMenu<R: tauri::Runtime>(#[allow(dead_code)] tauri::menu::Menu<R>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-#[cfg_attr(feature = "cef", tauri::cef_entry_point)]
+#[cfg_attr(all(desktop, feature = "cef"), tauri::cef_entry_point)]
 pub fn run() {
   run_app(tauri::Builder::<TauriRuntime>::new(), |_app| {});
 }
@@ -125,7 +125,7 @@ pub fn run_app<F: FnOnce(&App<TauriRuntime>) + Send + 'static>(
       #[cfg(debug_assertions)]
       webview.open_devtools();
 
-      #[cfg(feature = "cef")]
+      #[cfg(all(desktop, not(test), feature = "cef"))]
       {
         webview
           .on_dev_tools_protocol(|protocol| match protocol {
@@ -207,12 +207,12 @@ pub fn run_app<F: FnOnce(&App<TauriRuntime>) + Send + 'static>(
   #[cfg(target_os = "macos")]
   app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
-  #[cfg(target_os = "ios")]
+  #[cfg(all(target_os = "ios", not(test)))]
   let mut counter = 0;
   app.run(move |_app_handle, _event| {
     #[cfg(not(test))]
     match &_event {
-      #[cfg(not(feature = "cef"))]
+      #[cfg(not(all(desktop, feature = "cef")))]
       RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
         // Keep the event loop running even if all windows are closed
         // This allow us to catch tray icon events when there is no window

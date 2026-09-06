@@ -11,7 +11,7 @@
 //! The following are a list of [Cargo features](https://doc.rust-lang.org/stable/cargo/reference/manifest.html#the-features-section) that can be enabled or disabled:
 //!
 //! - **wry** *(enabled by default)*: Enables the [wry](https://github.com/tauri-apps/wry) runtime. Only disable it if you want a custom runtime.
-//! - **cef**: Enables the [CEF](https://github.com/chromiumembedded/cef) runtime.
+//! - **cef**: Enables the [CEF](https://github.com/chromiumembedded/cef) runtime on desktop targets.
 // - **common-controls-v6** *(enabled by default)*: Enables [Common Controls v6](https://learn.microsoft.com/en-us/windows/win32/controls/common-control-versions) support on Windows, mainly for the predefined `about` menu item.
 //! - **x11** *(enabled by default)*: Enables X11 support. Disable this if you only target Wayland.
 //! - **dbus** *(enabled by default)*: Enables dbus dependency for theme support on Linux. Disable this if you do not need theme support or don't want to build the dbus rust crate. The WebView dependencies use dbus either way.
@@ -75,7 +75,7 @@ pub use resources::{Resource, ResourceId, ResourceTable};
 #[cfg(target_os = "ios")]
 #[doc(hidden)]
 pub use swift_rs;
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_macros::cef_entry_point;
 pub use tauri_macros::include_image;
 #[cfg(mobile)]
@@ -129,53 +129,53 @@ pub type Wry = tauri_runtime_wry::Wry<EventLoopMessage>;
 pub type WryHandle = tauri_runtime_wry::WryHandle<EventLoopMessage>;
 
 /// A Tauri [`Runtime`] wrapper around cef.
-#[cfg(feature = "cef")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
+#[cfg(all(desktop, feature = "cef"))]
+#[cfg_attr(docsrs, doc(cfg(all(desktop, feature = "cef"))))]
 pub type Cef = tauri_runtime_cef::CefRuntime<EventLoopMessage>;
 /// A Tauri [`RuntimeHandle`] wrapper around cef.
-#[cfg(feature = "cef")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
+#[cfg(all(desktop, feature = "cef"))]
+#[cfg_attr(docsrs, doc(cfg(all(desktop, feature = "cef"))))]
 pub type CefHandle = tauri_runtime_cef::CefRuntimeHandle<EventLoopMessage>;
 
 /// Helper function for non-browser CEF processes (renderer, GPU, plugin, etc.).
-#[cfg(feature = "cef")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
+#[cfg(all(desktop, feature = "cef"))]
+#[cfg_attr(docsrs, doc(cfg(all(desktop, feature = "cef"))))]
 pub use tauri_runtime_cef::run_cef_helper_process;
 
 /// DevTools protocol message type for the CEF runtime.
-#[cfg(feature = "cef")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
+#[cfg(all(desktop, feature = "cef"))]
+#[cfg_attr(docsrs, doc(cfg(all(desktop, feature = "cef"))))]
 pub use tauri_runtime_cef::DevToolsProtocol as CefDevToolsProtocol;
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::FrameNavigationState as CefFrameNavigationState;
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::NativeDocumentToken as CefNativeDocumentToken;
 /// Opaque identity of a native CEF runtime window lifetime.
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::NativeWindowToken as CefNativeWindowToken;
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::{
   DevToolsMessageIdExhausted as CefDevToolsMessageIdExhausted,
   allocate_devtools_message_id as allocate_cef_devtools_message_id,
 };
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::{FrameEvent as CefFrameEvent, FrameEventKind as CefFrameEventKind};
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::{
   NativeDialogKind as CefNativeDialogKind, NativeDialogObservation as CefNativeDialogObservation,
   NativeDialogToken as CefNativeDialogToken,
 };
-#[cfg(feature = "cef")]
+#[cfg(all(desktop, feature = "cef"))]
 pub use tauri_runtime_cef::{Webview as CefWebview, WebviewSnapshot as CefWebviewSnapshot};
 
 /// The latest CEF API version known to the linked CEF bindings.
-#[cfg(feature = "cef")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
+#[cfg(all(desktop, feature = "cef"))]
+#[cfg_attr(docsrs, doc(cfg(all(desktop, feature = "cef"))))]
 pub use tauri_runtime_cef::CEF_API_VERSION_LAST;
 
 /// The runtime initialization attributes.
-#[cfg(feature = "cef")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cef")))]
+#[cfg(all(desktop, feature = "cef"))]
+#[cfg_attr(docsrs, doc(cfg(all(desktop, feature = "cef"))))]
 pub use tauri_runtime_cef::RuntimeInitAttrs as CefRuntimeAttributes;
 
 #[cfg(all(feature = "wry", target_os = "android"))]
@@ -361,7 +361,7 @@ pub const fn is_dev() -> bool {
 // TODO: Fix the error types
 /// Get WebView/Webkit version on current platform.
 pub fn webview_version() -> Result<String> {
-  #[cfg(feature = "cef")]
+  #[cfg(all(desktop, feature = "cef"))]
   if let Ok(v) = tauri_runtime_cef::webview_version() {
     return Ok(v);
   }

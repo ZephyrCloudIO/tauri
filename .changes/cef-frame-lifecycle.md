@@ -21,3 +21,6 @@ frames and renderer termination revoke prior document tokens.
 
 Include an opaque native window lifetime in webview snapshots so reparenting
 and same-label window recreation do not rely on reusable labels or handles.
+
+Keep CEF dependencies and APIs on desktop targets when mobile builds enable all
+features. Preserve the native mobile runtime in the API example.

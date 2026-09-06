@@ -431,7 +431,7 @@ impl<R: Runtime> WebviewManager<R> {
       core_script: &CoreJavascript {
         os_name: std::env::consts::OS,
         protocol_scheme: if use_https_scheme { "https" } else { "http" },
-        cef: cfg!(feature = "cef"),
+        cef: cfg!(all(desktop, feature = "cef")),
       }
       .render_default(&Default::default())?
       .into_string(),
