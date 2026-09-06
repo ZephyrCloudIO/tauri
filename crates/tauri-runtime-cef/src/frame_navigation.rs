@@ -116,7 +116,22 @@ impl FrameNavigationState {
 
   fn ready_generation(&self) -> Option<u64> {
     let state = self.state.lock().ok()?;
-    Self::ready(&state).then_some(state.generation)
+    let ready = Self::ready(&state);
+    if !ready {
+      log::debug!(
+        "native document unavailable: exhausted={}, load_observed={}, loading={}, frames={}, attached={}, main_attached={}",
+        state.exhausted,
+        state.observed_load_state,
+        state.loading,
+        state.frames.len(),
+        state.frames.values().filter(|attached| **attached).count(),
+        state
+          .main_frame
+          .as_ref()
+          .is_some_and(|id| state.frames.get(id) == Some(&true)),
+      );
+    }
+    ready.then_some(state.generation)
   }
 
   fn ready(state: &NativeFrameState) -> bool {
@@ -164,6 +179,13 @@ impl FrameNavigationState {
         | FrameEventKind::RendererTerminated
     );
     if frame_id.is_empty() && !browser_wide || frame_id.len() > MAX_NATIVE_FRAME_ID_BYTES {
+      log::warn!(
+        "native frame tracking exhausted: invalid identifier, empty={}, length={}, main={}, teardown={}",
+        frame_id.is_empty(),
+        frame_id.len(),
+        is_main,
+        matches!(kind, FrameEventKind::Detached | FrameEventKind::Destroyed),
+      );
       state.exhausted = true;
       return;
     }

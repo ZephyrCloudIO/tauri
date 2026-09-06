@@ -1096,16 +1096,70 @@ fn getter<T: UserEvent, R>(
 macro_rules! webview_getter {
   ($self:ident, $variant:ident) => {{
     let (tx, rx) = mpsc::channel();
+    // Drop the guard before waiting: CEF page-load callbacks on the UI thread
+    // may need this same lock to dispatch work before servicing the getter.
+    let window_id = *$self.window_id.lock().unwrap();
     getter(
       &$self.context,
       Message::Webview {
-        window_id: *$self.window_id.lock().unwrap(),
+        window_id,
         webview_id: $self.webview_id,
         message: WebviewMessage::$variant(tx),
       },
       rx,
     )
   }};
+}
+
+#[cfg(test)]
+mod getter_tests {
+  use super::{Message, WebviewMessage};
+  use std::sync::{Arc, Mutex, mpsc};
+  use tauri_runtime::{Result, window::WindowId};
+
+  // Exercise the production macro with a bounded UI-reply probe. A real CEF
+  // event loop cannot run in a unit-test worker; the probe checks the lock
+  // before replying so the regression fails instead of hanging the suite.
+  struct Dispatcher {
+    context: Arc<Mutex<WindowId>>,
+    window_id: Arc<Mutex<WindowId>>,
+    webview_id: u32,
+  }
+
+  fn getter(
+    window_id: &Arc<Mutex<WindowId>>,
+    message: Message<()>,
+    receiver: mpsc::Receiver<Result<String>>,
+  ) -> Result<String> {
+    let Message::Webview {
+      window_id: requested_window,
+      message: WebviewMessage::Url(reply),
+      ..
+    } = message
+    else {
+      panic!("expected a URL request");
+    };
+    let callback_window = window_id
+      .try_lock()
+      .expect("the UI callback must acquire the window lock before replying");
+    assert_eq!(*callback_window, requested_window);
+    reply.send(Ok("https://example.test/".into())).unwrap();
+    receiver.recv().unwrap()
+  }
+
+  #[test]
+  fn url_getter_does_not_hold_the_window_lock_while_waiting_for_ui() {
+    let window_id = Arc::new(Mutex::new(WindowId::from(1)));
+    let dispatcher = Dispatcher {
+      context: Arc::clone(&window_id),
+      window_id,
+      webview_id: 1,
+    };
+    assert_eq!(
+      webview_getter!(dispatcher, Url).unwrap(),
+      "https://example.test/"
+    );
+  }
 }
 
 impl<T: UserEvent> WebviewDispatch<T> for CefWebviewDispatcher<T> {
