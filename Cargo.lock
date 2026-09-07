@@ -1254,9 +1254,8 @@ dependencies = [
 
 [[package]]
 name = "cef"
-version = "151.8.1+151.3.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d4fbc354286b45619122580b769f6cff53ed19565fe10359253ae4c235495db"
+version = "151.1.0+151.1.0-HEAD.3585"
+source = "git+https://github.com/ZephyrCloudIO/cef-rs?rev=b7d425b8504cd3e7e10d193f8991aff415d10959#b7d425b8504cd3e7e10d193f8991aff415d10959"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.23.1",
@@ -1274,13 +1273,12 @@ dependencies = [
 
 [[package]]
 name = "cef-dll-sys"
-version = "151.8.1+151.3.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d073a3cd9fb40877a1ae38560cf5df2bb4601e02198880b61ef5476a8e28c35e"
+version = "151.1.0+151.1.0-HEAD.3585"
+source = "git+https://github.com/ZephyrCloudIO/cef-rs?rev=b7d425b8504cd3e7e10d193f8991aff415d10959#b7d425b8504cd3e7e10d193f8991aff415d10959"
 dependencies = [
  "anyhow",
  "cmake",
- "download-cef",
+ "download-cef 2.3.2 (git+https://github.com/ZephyrCloudIO/cef-rs?rev=b7d425b8504cd3e7e10d193f8991aff415d10959)",
  "serde_json",
 ]
 
@@ -2415,6 +2413,25 @@ name = "download-cef"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c169adf067a787e1f1c58ed62906a557de85388bee4b54fb878b722ff606b113"
+dependencies = [
+ "bzip2 0.6.1",
+ "clap",
+ "fs-err",
+ "indicatif",
+ "regex",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha1_smol",
+ "tar",
+ "thiserror 2.0.20",
+ "ureq",
+]
+
+[[package]]
+name = "download-cef"
+version = "2.3.2"
+source = "git+https://github.com/ZephyrCloudIO/cef-rs?rev=b7d425b8504cd3e7e10d193f8991aff415d10959#b7d425b8504cd3e7e10d193f8991aff415d10959"
 dependencies = [
  "bzip2 0.6.1",
  "clap",
@@ -9629,7 +9646,7 @@ dependencies = [
  "ctrlc",
  "dialoguer 0.12.0",
  "dirs 6.0.0",
- "download-cef",
+ "download-cef 2.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "duct",
  "dunce",
  "elf",
