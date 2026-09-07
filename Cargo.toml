@@ -87,5 +87,5 @@ tauri-utils = { path = "./crates/tauri-utils" }
 tauri-plugin-log = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "feat/cef" }
 
 # Custom framework preserves browser extension support.
-cef = { git = "https://github.com/ZephyrCloudIO/cef-rs", rev = "b7d425b8504cd3e7e10d193f8991aff415d10959" }
-cef-dll-sys = { git = "https://github.com/ZephyrCloudIO/cef-rs", rev = "b7d425b8504cd3e7e10d193f8991aff415d10959" }
+cef = { git = "https://github.com/ZephyrCloudIO/cef-rs", rev = "6310198885d6b84bf0e0a57124f2e65bd5d0e30e" }
+cef-dll-sys = { git = "https://github.com/ZephyrCloudIO/cef-rs", rev = "6310198885d6b84bf0e0a57124f2e65bd5d0e30e" }
